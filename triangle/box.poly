@@ -1,0 +1,22 @@
+# A box with eight points in 2D, no attributes, no boundary marker.
+8 2 0 0
+# Outer box has these vertices:
+    1   0 0
+    2   0 3
+    3   3 0
+    4   3 3
+# Inner square has these vertices:
+    5   1 1
+    6   1 2
+    7   2 1
+    8   2 2
+# Five segments without boundary markers.
+5 0
+    1   1 2          # Left side of outer box.
+    2   5 7          # Segments 2 through 5 enclose the hole.
+    3   7 8
+    4   8 6
+    5   6 5
+# One hole in the middle of the inner square.
+1
+    1   1.5 1.5
