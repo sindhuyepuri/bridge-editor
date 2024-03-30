@@ -129,7 +129,7 @@ void defineBezierCurves(vector<Bezier*> curves) {
     Input: vector of Bezier curves
     Output: array of points, array of point indices where every 2 elements represent a segment
 */
-void constructBoundary(vector<Bezier*> curves, double* boundaryPoints, int* boundarySegments, int& boundarySize) {
+void constructBoundary(vector<Bezier*> curves, vector<pair<double, double>>& boundaryPoints, vector<pair<int, int>>& boundarySegments, int& boundarySize) {
     defineBezierCurves(curves);
 
     // Stitch curves together by finding the neighbors of each point.
@@ -150,13 +150,12 @@ void constructBoundary(vector<Bezier*> curves, double* boundaryPoints, int* boun
     // (1) Construct `boundaryPoints` array.
     // (2) Check "closed" loop condition.
     // (3) Map points to indices s.t. can construct `boundarySegments` array.
-    double* bPoints = new double[2 * pointNeighbors.size()];
+    vector<pair<double, double>> bPoints;
     bool exactlyTwoNeighbors = true;
     unordered_map<pair<double, double>, int, PairHash> point_idx_map;
     int p_index = 0;
     for (const auto& [point, neighbors] : pointNeighbors) {
-        bPoints[2 * p_index] = point.first;
-        bPoints[2 * p_index + 1] = point.second;
+        bPoints.push_back(point);
         exactlyTwoNeighbors &= (neighbors.size() == 2);
         point_idx_map[point] = p_index++;
     }
@@ -166,11 +165,11 @@ void constructBoundary(vector<Bezier*> curves, double* boundaryPoints, int* boun
     //
     // We will now traverse our points like a circular linked list, to construct our segments.
     //
-    int* bSegments = new int[2 * pointNeighbors.size()];
+    vector<pair<int, int>> bSegments;
     int start_idx = 0;
-    pair<double, double> first {bPoints[2 * start_idx], bPoints[2 * start_idx + 1]};
-    pair<double, double> cur {bPoints[2 * start_idx], bPoints[2 * start_idx + 1]};
-    pair<double, double> prev {bPoints[2 * start_idx], bPoints[2 * start_idx + 1]};
+    pair<double, double> first {bPoints[start_idx].first, bPoints[start_idx].second};
+    pair<double, double> cur {bPoints[start_idx].first, bPoints[start_idx].second};
+    pair<double, double> prev {bPoints[start_idx].first, bPoints[start_idx].second};
     int seg_idx = 0;
     do {
         // Note: exactly 2 neighbors per point
@@ -179,13 +178,11 @@ void constructBoundary(vector<Bezier*> curves, double* boundaryPoints, int* boun
 
         // We arrived cur from either neighbor 1 or neighbor 2, do not want to revisit points
         if (n_1 != prev) {
-            bSegments[2 * seg_idx] = point_idx_map[cur];
-            bSegments[2 * seg_idx + 1] = point_idx_map[n_1];
+            bSegments.push_back({point_idx_map[cur], point_idx_map[n_1]});
             prev = cur;
             cur = n_1;
         } else {
-            bSegments[2 * seg_idx] = point_idx_map[cur];
-            bSegments[2 * seg_idx + 1] = point_idx_map[n_2];
+            bSegments.push_back({point_idx_map[cur], point_idx_map[n_2]});
             prev = cur;
             cur = n_2;
         }
@@ -197,49 +194,56 @@ void constructBoundary(vector<Bezier*> curves, double* boundaryPoints, int* boun
     boundarySize = (int)pointNeighbors.size();
 }
 
-void triangulateBoundary(double* points, int* segments, int size, bool q, bool D, double maxArea, bool Y, int maxS,
-                         vector<pair<double, double>>* points_out, vector<pair<int, int>>* edges_out) {
-    cout << "before in struct" << endl;
+void triangulateBoundary(vector<pair<double, double>> points, vector<pair<int, int>> segments, int size, bool q, bool D, double maxArea, bool Y, int maxS,
+                         vector<pair<double, double>>& points_out, vector<pair<int, int>>& edges_out) {
+    double* points_in = new double[2 * points.size()];
+    int* segs_in = new int[2 * segments.size()];
+    for (int i = 0; i < points.size(); i++) {
+        points_in[2 * i] = points[i].first;
+        points_in[2 * i + 1] = points[i].second;
+    }
+    for (int i = 0; i < segments.size(); i++) {
+        segs_in[2 * i] = segments[i].first;
+        segs_in[2 * i + 1] = segments[i].second;
+    }
+
     struct triangulateio* trio_in = new triangulateio;
-    trio_in->pointlist = points;
+    trio_in->pointlist = points_in;
     trio_in->numberofpoints = size;
     trio_in->numberofpointattributes = 0;
     trio_in->pointmarkerlist = nullptr;
-    trio_in->segmentlist = segments;
+    trio_in->segmentlist = segs_in;
     trio_in->numberofsegments = size;
     trio_in->segmentmarkerlist = nullptr;
     trio_in->numberofholes = 0;
     trio_in->holelist = nullptr;
     trio_in->numberofregions = 0;
     trio_in->regionlist = nullptr;
-    cout << "after in struct" << endl;
+
     struct triangulateio* trio_out = new triangulateio;
     trio_out->pointlist = nullptr;
     trio_out->trianglelist = nullptr;
     trio_out->segmentlist = nullptr;
     trio_out->segmentmarkerlist = nullptr;
     trio_out->pointmarkerlist = nullptr;
-    cout << "after out struct" << endl;
+
     string triswitches = "pz";
     if (q) triswitches += "q";
     if (D) triswitches += "D";
     if (maxArea != 0.0) triswitches += "a" + to_string(maxArea);
     if (Y) triswitches += "Y";
     if (maxS > -1) triswitches += "S" + to_string(maxS);
-    cout << "after switches" << endl;
     triangulate(const_cast<char*>(triswitches.c_str()), trio_in, trio_out, nullptr);
-    cout << "after triangulation" << endl;
-    vector<pair<double, double>>* p_out;
+    vector<pair<double, double>> p_out;
     for (int i = 0; i < trio_out->numberofpoints; i++) {
-        p_out->push_back(pair<double, double>{trio_out->pointlist[2 * i], trio_out->pointlist[2 * i + 1]});
+        p_out.push_back(pair<double, double>{trio_out->pointlist[2 * i], trio_out->pointlist[2 * i + 1]});
     }
-    vector<pair<int, int>>* e_out;
+    vector<pair<int, int>> e_out;
     for (int i = 0; i < trio_out->numberoftriangles; i++) {
-        e_out->push_back(pair<int, int>{trio_out->trianglelist[3 * i] , trio_out->trianglelist[3 * i + 1]});
-        e_out->push_back(pair<int, int>{trio_out->trianglelist[3 * i], trio_out->trianglelist[3 * i + 2]});
-        e_out->push_back(pair<int, int>{trio_out->trianglelist[3 * i + 1], trio_out->trianglelist[3 * i + 2]});
+        e_out.push_back(pair<int, int>{trio_out->trianglelist[3 * i] , trio_out->trianglelist[3 * i + 1]});
+        e_out.push_back(pair<int, int>{trio_out->trianglelist[3 * i], trio_out->trianglelist[3 * i + 2]});
+        e_out.push_back(pair<int, int>{trio_out->trianglelist[3 * i + 1], trio_out->trianglelist[3 * i + 2]});
     }
-    cout << "after filling out" << endl;
     points_out = p_out;
     edges_out = e_out;
 }
@@ -250,16 +254,16 @@ vector<Bezier*> curves = {new Bezier{{{0, 0}, {6, -3}, {12, 0}}},
   new Bezier{{{6, 15}, {-3, 9}}},
   new Bezier{{{-3, 9}, {0, 0}}}};
 bool curvesReady;
-array<double> points;
-array<int> segments;
+vector<pair<double, double>> points;
+vector<pair<int, int>> segments;
 int in_size;
 bool q = false;
 bool D = false;
 double maxArea = 0.0;
 bool Y = false;
 int maxS = -1;
-vector<pair<double, double>>* p_out;
-vector<pair<int, int>>* e_out;
+vector<pair<double, double>> p_out;
+vector<pair<int, int>> e_out;
 
 void visualizeBoundary() {
     vector<glm::vec3> bPoints;
@@ -279,11 +283,11 @@ void visualizeBoundary() {
 void visualizeTriangulation() {
     vector<glm::vec3> tPoints;
     vector<array<int, 2>> tEdges;
-    for (int i = 0; i < p_out->size(); i++) {
-        tPoints.push_back(glm::vec3{p_out->at(i).first, 0, p_out->at(i).second});
+    for (int i = 0; i < p_out.size(); i++) {
+        tPoints.push_back(glm::vec3{p_out[i].first, 0, p_out[i].second});
     }
-    for (int i = 0; i < e_out->size(); i++) {
-        tEdges.push_back({e_out->at(i).first, e_out->at(i).second});
+    for (int i = 0; i < e_out.size(); i++) {
+        tEdges.push_back({e_out[i].first, e_out[i].second});
     }
     polyscope::registerCurveNetwork("Triangulated Boundary", tPoints, tEdges);
 }
@@ -313,8 +317,7 @@ void drawImGui() {
     }
     
     if (ImGui::Button("Construct Boundary")) {
-        constructBoundary(curves, &points, &segments, in_size);
-        cout << in_size << endl;
+        constructBoundary(curves, points, segments, in_size);
         curvesReady = true;
         visualizeBoundary();
     }
@@ -331,10 +334,6 @@ void drawImGui() {
     }
     if (ImGui::Button("Triangulate")) {
         if (curvesReady) {
-            cout << in_size << endl;
-            for (int i = 0; i < in_size; i++) {
-                cout << "(" << points[2 * i] << ", " << points[2 * i + 1] << ") " << segments[2 * i] << " " << segments[2 * i + 1] << endl;
-            }
             triangulateBoundary(points, segments, in_size, q, D, maxArea, Y, maxS, p_out, e_out);
             visualizeTriangulation();
         }
