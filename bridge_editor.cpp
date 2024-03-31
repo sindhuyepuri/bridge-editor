@@ -5,6 +5,9 @@
 #include "polyscope/point_cloud.h"
 #include "polyscope/curve_network.h"
 
+#include "gurobi_c++.h"
+#include "gurobi_c.h"
+
 using namespace std;
 
 // // // // // // // // // // // // // // // // 
@@ -248,11 +251,16 @@ void triangulateBoundary(vector<pair<double, double>> points, vector<pair<int, i
     edges_out = e_out;
 }
 
-vector<Bezier*> curves = {new Bezier{{{0, 0}, {6, -3}, {12, 0}}}, 
-  new Bezier{{{12, 0}, {15, 9}}},
-  new Bezier{{{15, 9}, {10.5, 12}, {6, 15}}},
-  new Bezier{{{6, 15}, {-3, 9}}},
-  new Bezier{{{-3, 9}, {0, 0}}}};
+// vector<Bezier*> curves = {new Bezier{{{0, 0}, {6, -3}, {12, 0}}}, 
+//   new Bezier{{{12, 0}, {15, 9}}},
+//   new Bezier{{{15, 9}, {10.5, 12}, {6, 15}}},
+//   new Bezier{{{6, 15}, {-3, 9}}},
+//   new Bezier{{{-3, 9}, {0, 0}}}};
+
+vector<Bezier*> curves = {new Bezier{{{0, 0}, {0, 10}}}, 
+  new Bezier{{{0, 10}, {10, 10}}},
+  new Bezier{{{10, 10}, {10, 0}}},
+  new Bezier{{{10, 0}, {0, 0}}}};
 bool curvesReady;
 vector<pair<double, double>> points;
 vector<pair<int, int>> segments;
@@ -264,6 +272,8 @@ bool Y = false;
 int maxS = -1;
 vector<pair<double, double>> p_out;
 vector<pair<int, int>> e_out;
+vector<pair<double, double>> pinned;
+bool triReady = false;
 
 void visualizeBoundary() {
     vector<glm::vec3> bPoints;
@@ -273,7 +283,10 @@ void visualizeBoundary() {
         for (int j = 0; j < p.size(); j++) {
             glm::vec3 pnt{p[j].first, 0, p[j].second};
             bPoints.push_back(pnt);
-            if (curves[i]->pinnedCurve) pinnedPoints.push_back(pnt);
+            if (curves[i]->pinnedCurve) {
+                pinnedPoints.push_back(pnt);
+                pinned.push_back(p[j]);
+            }
         }
     }
     polyscope::registerPointCloud("Boundary", bPoints);
@@ -290,6 +303,263 @@ void visualizeTriangulation() {
         tEdges.push_back({e_out[i].first, e_out[i].second});
     }
     polyscope::registerCurveNetwork("Triangulated Boundary", tPoints, tEdges);
+}
+
+pair<int, int> make_edge(int x, int y) {
+    if (x < y) {
+        return pair<int, int>(x, y);
+    } else {
+        return pair<int, int>(y, x);
+    }
+}
+
+void add_neighbor(map<int, set<int>>& m, int key, int neighbor) {
+    if (m.find(key) == m.end()) {
+        set<int> s;
+        s.insert(neighbor);
+        m[key] = s;
+    } else {
+        m[key].insert(neighbor);
+    }
+}
+
+float get_random() {
+    static std::default_random_engine e;
+    static std::uniform_real_distribution<> dist(1, 11);
+    return dist(e);
+}
+
+void constructBridge() {
+    unordered_map<int, double> x_i;
+    unordered_map<int, double> y_i;
+    unordered_map<pair<double, double>, int, PairHash> pnt_idx_map;
+    for (int i = 0; i < p_out.size(); i++) {
+        x_i[i] = p_out[i].first;
+        y_i[i] = p_out[i].second;
+        pnt_idx_map[p_out[i]] = i;
+        cout << "point " << i << " " << x_i[i] << " " << y_i[i] << endl;
+    }
+
+    map<int, set<int>> neighbors;
+    set<pair<int, int>> edges;
+    for (int i = 0; i < e_out.size(); i++) {
+        edges.insert(make_edge(e_out[i].first, e_out[i].second));
+        add_neighbor(neighbors, e_out[i].first, e_out[i].second);
+    }
+
+    set<int> pinned_idx;
+    for (int i = 0; i < pinned.size(); i++) {
+        pinned_idx.insert(pnt_idx_map[pinned[i]]);
+        cout << "pinned " << pnt_idx_map[pinned[i]] << endl;
+    }
+
+    vector<glm::vec3> bridge_points;
+    try {
+        double total_load = 1000.0;
+        double load = total_load / (x_i.size());
+
+        set<pair<int, int>>::iterator itr;
+        map<pair<int, int>, int> scalar_idx;
+        int i = 0;
+        for (itr = edges.begin(); itr != edges.end(); itr++) {
+            auto edge = *itr;
+            scalar_idx[edge] = i++;
+        }
+
+        // Start with random edge scalars
+        float subs_scalars[edges.size()];
+        for (int i = 0; i < edges.size(); i++) {
+            subs_scalars[i] = get_random();
+            cout << "old scalar " << subs_scalars[i] << endl;
+        }
+        float subs_z[x_i.size()];
+
+        int iters = 0;
+        bool toggling = true;
+        bool toggle_solve_z = true;
+        bool toggle_solve_scalar = false;
+
+        float prev_z_abs_diff = 1e8;
+        float prev_scalar_abs_diff = 1e8;
+        while (toggling) {
+            iters++;
+            float z_abs_diff = 0;
+            float scalar_abs_diff = 0;
+            cout << "solving for z" << endl;
+            if (toggle_solve_z) {
+                GRBEnv env = GRBEnv();
+                GRBModel model = GRBModel(env);
+
+                GRBVar z_i[x_i.size()];
+                for (int i = 0; i < x_i.size(); i++) {
+                    string z = "z_" + to_string(i);
+                    z_i[i] = model.addVar(-GRB_INFINITY, GRB_INFINITY, 0.0, GRB_CONTINUOUS, z);
+                }
+                for (int i = 0; i < x_i.size(); i++) {
+                    set<int> neighbors_i = neighbors[i];
+                    if (neighbors_i.empty()) cout << "sad" << endl;
+                    set<int>::iterator itr;
+                    GRBLinExpr x_comp;
+                    GRBLinExpr y_comp;
+                    GRBLinExpr z_comp;
+
+                    float e_ix = x_i[i];
+                    float e_iy = y_i[i];
+                    GRBVar e_iz = z_i[i];
+                    // cout << "node " << i << ": ";
+                    if (pinned_idx.find(i) == pinned_idx.end()) {
+                        for (itr = neighbors_i.begin(); itr != neighbors_i.end(); itr++) {
+                            int neighbor = *itr;
+                            // cout << neighbor << " ";
+                            pair<int, int> edge = make_edge(i, neighbor);
+                            float e_jx = x_i[neighbor];
+                            float e_jy = y_i[neighbor];
+                            GRBVar e_jz = z_i[neighbor];
+                            float s = subs_scalars[scalar_idx[edge]];
+
+                            x_comp += (e_ix - e_jx) * s;
+                            y_comp += (e_iy - e_jy) * s;
+                            z_comp += (e_iz - e_jz) * s;
+                        }
+                        // cout << endl;
+                        string x_constr = to_string(i)+"_xcmpnt";
+                        string y_constr = to_string(i)+"_ycmpnt";
+                        string z_constr = to_string(i)+"_zcmpnt";
+                        model.addConstr(x_comp == 0.0, x_constr);
+                        model.addConstr(y_comp == 0.0, y_constr);
+                        model.addConstr((z_comp - load) == 0.0, z_constr);
+                    } else {
+                        model.addConstr(z_i[i] == 0.0);
+                    }
+                }
+                
+                model.update();
+                model.feasRelax(0, false, false, true);
+                model.write("debug.lp");
+                model.optimize();
+
+                float solved_z[x_i.size()]; // unneeded, but just for understanding
+                float sum_difference = 0;
+                for(int i = 0; i < x_i.size(); i++) {
+                    solved_z[i] = z_i[i].get(GRB_DoubleAttr_X);
+                    if (iters > 1) { // no valid comparison atp
+                        sum_difference += std::abs(solved_z[i] - subs_z[i]);
+                    }
+                    subs_z[i] = solved_z[i];
+                }
+                
+                z_abs_diff = sum_difference;
+                toggle_solve_scalar = true;
+                toggle_solve_z = false;
+            } else if (toggle_solve_scalar) {
+                GRBEnv env = GRBEnv();
+                GRBModel model = GRBModel(env);
+
+                GRBVar scalars[edges.size()];
+                set<pair<int, int>>::iterator itr;
+                int i = 0;
+                for (itr = edges.begin(); itr != edges.end(); itr++) {
+                    auto edge = *itr;
+                    string s_i = "s_" + to_string(edge.first) + "_" + to_string(edge.second);
+                    scalars[i++] = model.addVar(1.0, GRB_INFINITY, 0.0, GRB_CONTINUOUS, s_i);
+                }
+
+                for (int i = 0; i < x_i.size(); i++) {
+                    set<int> neighbors_i = neighbors[i];
+                    set<int>::iterator itr;
+                    GRBLinExpr x_comp;
+                    GRBLinExpr y_comp;
+                    GRBLinExpr z_comp;
+
+                    float e_ix = x_i[i];
+                    float e_iy = y_i[i];
+                    float e_iz = subs_z[i]; // use solved z 
+
+                    if (pinned_idx.find(i) == pinned_idx.end()) {
+                        for (itr = neighbors_i.begin(); itr != neighbors_i.end(); itr++) {
+                            int neighbor = *itr;
+                            pair<int, int> edge = make_edge(i, neighbor);
+                            float e_jx = x_i[neighbor];
+                            float e_jy = y_i[neighbor];
+                            float e_jz = subs_z[neighbor]; // use solved z
+                            GRBVar s = scalars[scalar_idx[edge]];
+                            x_comp += (e_ix - e_jx) * s;
+                            y_comp += (e_iy - e_jy) * s;
+                            z_comp += (e_iz - e_jz) * s;
+                        }
+                        string x_constr = to_string(i)+"_xcmpnt";
+                        string y_constr = to_string(i)+"_ycmpnt";
+                        string z_constr = to_string(i)+"_zcmpnt";
+                        model.addConstr(x_comp == 0.0, x_constr);
+                        model.addConstr(y_comp == 0.0, y_constr);
+                        model.addConstr((z_comp - load) == 0.0, z_constr);
+                    } 
+                }
+                
+                model.update();
+                model.feasRelax(0, false, false, true);
+                model.write("debug.lp");
+                model.optimize();
+
+                float solved_scalar[edges.size()]; // unneeded, but just for understanding
+                float sum_difference = 0;
+
+                for(int i = 0; i < edges.size(); i++) {
+                    solved_scalar[i] = scalars[i].get(GRB_DoubleAttr_X);
+                    sum_difference += std::abs(solved_scalar[i] - subs_scalars[i]);
+                    subs_scalars[i] = solved_scalar[i];
+                }
+                
+                scalar_abs_diff = sum_difference;
+                toggle_solve_scalar = false;
+                toggle_solve_z = true;
+            }
+            
+            if (iters > 100) {
+                cout << "Hit 100 iters, terminating now" << endl;
+                toggling = false;
+            }
+
+            // Checking for convergence
+            float z_update_diff = std::abs(prev_z_abs_diff - z_abs_diff);
+            float scalar_update_diff = std::abs(prev_scalar_abs_diff - scalar_abs_diff);
+            if (z_update_diff < 1e-8 && scalar_update_diff < 1e-8) {
+                cout << "Converged, terminating now" << endl;
+                cout << "Num iters: " << iters << endl;
+                cout << z_update_diff << endl;
+                cout << scalar_update_diff << endl;
+                toggling = false;
+            } else {
+                cout << "Didn't converge" << endl;
+                cout << z_update_diff + scalar_update_diff << endl;
+            }
+            prev_z_abs_diff = z_abs_diff;
+            prev_scalar_abs_diff = scalar_abs_diff;
+            cout << "toggling " << toggling << endl;
+        }
+
+        for (int i = 0; i < x_i.size(); i++) {
+            float x = x_i[i];
+            float z = subs_z[i];
+            float y = y_i[i];
+            bridge_points.push_back(
+                glm::vec3{x, z, y}
+            );
+        }
+    } catch(GRBException e) {
+        cout << "Error code = " << e.getErrorCode() << endl;
+        cout << e.getMessage() << endl;
+    } catch(...) {
+        cout << "Exception during optimization" << endl;
+    }
+
+    vector<array<int, 2>> vec_edges;
+    for (auto &p : edges) {
+        array<int, 2> arr = {p.first, p.second};
+        vec_edges.push_back(arr);
+    }
+
+    polyscope::registerCurveNetwork("my network", bridge_points, vec_edges);
 }
 
 void drawImGui() {
@@ -315,12 +585,16 @@ void drawImGui() {
             }
         }
     }
+
+    ImGui::Separator();
     
     if (ImGui::Button("Construct Boundary")) {
         constructBoundary(curves, points, segments, in_size);
         curvesReady = true;
         visualizeBoundary();
     }
+
+    ImGui::Separator();
     
     if(ImGui::CollapsingHeader("Triangulation Parameters")) {
         if (ImGui::Checkbox("No angles smaller than 20 degrees", &q)) {
@@ -336,6 +610,12 @@ void drawImGui() {
         if (curvesReady) {
             triangulateBoundary(points, segments, in_size, q, D, maxArea, Y, maxS, p_out, e_out);
             visualizeTriangulation();
+            triReady = true;
+        }
+    }
+    if (ImGui::Button("Construct Bridge")) {
+        if (triReady) {
+            constructBridge();
         }
     }
 }
