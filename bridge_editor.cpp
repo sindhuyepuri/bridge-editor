@@ -101,7 +101,7 @@ pair<double, double> deCastelJau(const vector<pair<double, double>>& controlPoin
 
 void bezierCurve(Bezier* curve) {
   vector<pair<double, double>> p;
-  for (double t = 0; t <= 1.0; t += 0.1) {
+  for (double t = 0; t <= 1.0; t += .1) {
     p.push_back(deCastelJau(curve->controlPoints, t));
   }
   curve->points = p;
@@ -257,10 +257,16 @@ void triangulateBoundary(vector<pair<double, double>> points, vector<pair<int, i
 //   new Bezier{{{6, 15}, {-3, 9}}},
 //   new Bezier{{{-3, 9}, {0, 0}}}};
 
-vector<Bezier*> curves = {new Bezier{{{0, 0}, {0, 10}}}, 
-  new Bezier{{{0, 10}, {10, 10}}},
-  new Bezier{{{10, 10}, {10, 0}}},
-  new Bezier{{{10, 0}, {0, 0}}}};
+// vector<Bezier*> curves = {new Bezier{{{0, 0}, {0, 1000}}}, 
+//   new Bezier{{{0, 10}, {10, 10}}},
+//   new Bezier{{{10, 10}, {10, 0}}},
+//   new Bezier{{{10, 0}, {0, 0}}}};
+
+vector<Bezier*> curves = {new Bezier{{{210, 210}, {-210, 210}}},
+    new Bezier{{{-210, 210}, {-210, -210}}},
+    new Bezier{{{-210, -210}, {210, -210}}},
+    new Bezier{{{210, -210}, {210, 210}}}};
+    
 bool curvesReady;
 vector<pair<double, double>> points;
 vector<pair<int, int>> segments;
@@ -515,10 +521,10 @@ void constructBridge() {
                 toggle_solve_z = true;
             }
             
-            if (iters > 100) {
-                cout << "Hit 100 iters, terminating now" << endl;
-                toggling = false;
-            }
+            // if (iters > 100) {
+            //     cout << "Hit 100 iters, terminating now" << endl;
+            //     toggling = false;
+            // }
 
             // Checking for convergence
             float z_update_diff = std::abs(prev_z_abs_diff - z_abs_diff);
