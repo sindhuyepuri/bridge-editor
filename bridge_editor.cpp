@@ -1,6 +1,7 @@
 #include <unordered_map>
 #include <iostream>
 #include <fstream>
+#include <algorithm>
 
 #include "polyscope/polyscope.h"
 #include "polyscope/point_cloud.h"
@@ -9,7 +10,20 @@
 #include "gurobi_c++.h"
 #include "gurobi_c.h"
 
-using namespace std;
+using std::cout;
+using std::endl;
+using std::vector;
+using std::array;
+using std::pair;
+using std::unordered_map;
+using std::set;
+using std::map;
+using std::string;
+using std::ofstream;
+using std::to_string;
+using std::multiset;
+using std::hash;
+
 
 // // // // // // // // // // // // // // // // 
 // No existing C++ default pair<T, T> hash   //
@@ -106,7 +120,7 @@ pair<double, double> deCastelJau(const vector<pair<double, double>>& controlPoin
 
 void bezierCurve(Bezier* curve) {
   vector<pair<double, double>> p;
-  for (double t = 0; t <= 1.0; t += .5) {
+  for (double t = 0; t <= 1.0; t += .1) {
     p.push_back(deCastelJau(curve->controlPoints, t));
   }
   curve->points = p;
@@ -292,15 +306,15 @@ void triangulateBoundary(vector<pair<double, double>> points, vector<pair<int, i
 //   new Bezier{{{6, 15}, {-3, 9}}},
 //   new Bezier{{{-3, 9}, {0, 0}}}};
 
-vector<Bezier*> curves = {new Bezier{{{0, 0}, {0, 10}}}, 
-  new Bezier{{{0, 10}, {10, 10}}},
-  new Bezier{{{10, 10}, {10, 0}}},
-  new Bezier{{{10, 0}, {0, 0}}}};
+// vector<Bezier*> curves = {new Bezier{{{0, 0}, {0, 10}}}, 
+//   new Bezier{{{0, 10}, {10, 10}}},
+//   new Bezier{{{10, 10}, {10, 0}}},
+//   new Bezier{{{10, 0}, {0, 0}}}};
 
-// vector<Bezier*> curves = {new Bezier{{{210, 210}, {-210, 210}}},
-//     new Bezier{{{-210, 210}, {-210, -210}}},
-//     new Bezier{{{-210, -210}, {210, -210}}},
-//     new Bezier{{{210, -210}, {210, 210}}}};
+vector<Bezier*> curves = {new Bezier{{{210, 210}, {-210, 210}}},
+    new Bezier{{{-210, 210}, {-210, -210}}},
+    new Bezier{{{-210, -210}, {210, -210}}},
+    new Bezier{{{210, -210}, {210, 210}}}};
     
 // vector<Bezier*> curves = {new Bezier{{{-210, 123}, {0, 56}, {210, 123}}},
 //     new Bezier{{{210, 123}, {210, -67}}},
@@ -399,8 +413,9 @@ void add_neighbor(map<int, set<int>>& m, int key, int neighbor) {
     }
 }
 
+static std::default_random_engine e(123);
+
 float get_random() {
-    static std::default_random_engine e;
     static std::uniform_real_distribution<> dist(1, 11);
     return dist(e);
 }
@@ -432,13 +447,8 @@ void constructBridge() {
     }
 
     vector<glm::vec3> bridge_points;
-    ofstream s_obj;
-    s_obj.open("scalar-obj.txt");
-
-    ofstream z_obj;
-    z_obj.open("z-obj.txt");
     try {
-        double total_load = 2500.0;
+        double total_load = 200000.0;
         double load = total_load / (x_i.size());
 
         set<pair<int, int>>::iterator itr;
@@ -450,276 +460,262 @@ void constructBridge() {
         }
 
         // Start with random edge scalars
-        float subs_scalars[edges.size()];
+        vector<float> subs_scalars(edges.size(), 0.0);
         for (int i = 0; i < edges.size(); i++) {
             subs_scalars[i] = get_random();
-            cout << "old scalar " << subs_scalars[i] << endl;
         }
-        float subs_z[x_i.size()];
+        vector<float> subs_z(x_i.size(), 0.0);
 
         int iters = 0;
-        bool toggling = true;
-        bool toggle_solve_z = true;
-        bool toggle_solve_scalar = false;
 
-        float prev_z_abs_diff = 1e8;
-        float prev_scalar_abs_diff = 1e8;
         ofstream debug_constraints;
         debug_constraints.open("input_constraints.txt");
-        while (toggling) {
-            iters++;
+        do {
             float z_abs_diff = 0;
             float scalar_abs_diff = 0;
-            cout << "solving for z" << endl;
-            if (toggle_solve_z) {
-                GRBEnv env = GRBEnv();
-                GRBModel model = GRBModel(env);
 
-                GRBVar z_i[x_i.size()];
-                for (int i = 0; i < x_i.size(); i++) {
-                    string z = "z_" + to_string(i);
-                    z_i[i] = model.addVar(-GRB_INFINITY, GRB_INFINITY, 0.0, GRB_CONTINUOUS, z);
-                }
-                for (int i = 0; i < x_i.size(); i++) {
-                    set<int> neighbors_i = neighbors[i];
-                    if (neighbors_i.empty()) cout << "sad" << endl;
-                    set<int>::iterator itr;
-                    GRBLinExpr x_comp;
-                    GRBLinExpr y_comp;
-                    GRBLinExpr z_comp;
+            cout << "BEGINNING VALUES" << endl;
+            for (int i = 0; i < subs_scalars.size(); i++) {
+                cout << subs_scalars[i] << " ";
+            }
+            cout << endl;
+            for (int i = 0; i < subs_z.size(); i++) {
+                cout << subs_z[i] << " ";
+            }
+            cout << endl;
 
-                    float e_ix = x_i[i];
-                    float e_iy = y_i[i];
-                    GRBVar e_iz = z_i[i];
-                    if (pinned_idx.find(i) == pinned_idx.end()) {
-                        for (itr = neighbors_i.begin(); itr != neighbors_i.end(); itr++) {
-                            int neighbor = *itr;
-                            pair<int, int> edge = make_edge(i, neighbor);
-                            float e_jx = x_i[neighbor];
-                            float e_jy = y_i[neighbor];
-                            GRBVar e_jz = z_i[neighbor];
-                            float s = subs_scalars[scalar_idx[edge]];
+            cout << "SOLVING FOR Z" << endl;
 
-                            x_comp += (e_ix - e_jx) * s;
-                            y_comp += (e_iy - e_jy) * s;
-                            z_comp += (e_iz - e_jz) * s;
-                        }
-                        // cout << endl;
-                        string x_constr = to_string(i)+"_xcmpnt";
-                        string y_constr = to_string(i)+"_ycmpnt";
-                        string z_constr = to_string(i)+"_zcmpnt";
-                        model.addConstr(x_comp == 0.0, x_constr);
-                        model.addConstr(y_comp == 0.0, y_constr);
-                        model.addConstr((z_comp - load) == 0.0, z_constr);
-                    } else {
-                        model.addConstr(z_i[i] == 0.0);
+            GRBEnv z_solve_env = GRBEnv();
+            GRBModel z_solve_model = GRBModel(z_solve_env);
+
+            GRBVar z_i[x_i.size()];
+            for (int i = 0; i < x_i.size(); i++) {
+                string z = "z_" + to_string(i);
+                z_i[i] = z_solve_model.addVar(-GRB_INFINITY, GRB_INFINITY, 0.0, GRB_CONTINUOUS, z);
+            }
+
+            float check_z_comp = 0;
+            for (int i = 0; i < x_i.size(); i++) {
+                set<int> neighbors_i = neighbors[i];
+                set<int>::iterator itr;
+                GRBLinExpr x_comp;
+                GRBLinExpr y_comp;
+                GRBLinExpr z_comp;
+
+                float e_ix = x_i[i];
+                float e_iy = y_i[i];
+                GRBVar e_iz = z_i[i];
+                float node_z_check = 0;
+                if (pinned_idx.find(i) == pinned_idx.end()) {
+                    for (itr = neighbors_i.begin(); itr != neighbors_i.end(); itr++) {
+                        int neighbor = *itr;
+                        pair<int, int> edge = make_edge(i, neighbor);
+                        float e_jx = x_i[neighbor];
+                        float e_jy = y_i[neighbor];
+                        GRBVar e_jz = z_i[neighbor];
+                        float s = subs_scalars[scalar_idx[edge]];
+
+                        x_comp += (e_ix - e_jx) * s;
+                        y_comp += (e_iy - e_jy) * s;
+                        z_comp += (e_iz - e_jz) * s;
+                        node_z_check += (subs_z[i] - subs_z[neighbor]) * s;
                     }
+                    // cout << endl;
+                    string x_constr = to_string(i)+"_xcmpnt";
+                    string y_constr = to_string(i)+"_ycmpnt";
+                    string z_constr = to_string(i)+"_zcmpnt";
+                    z_solve_model.addConstr(x_comp == 0.0, x_constr);
+                    z_solve_model.addConstr(y_comp == 0.0, y_constr);
+                    z_solve_model.addConstr((z_comp - load) == 0.0, z_constr);
+                    check_z_comp += std::abs(node_z_check - load);
+                } else {
+                    z_solve_model.addConstr(z_i[i] == 0.0);
                 }
-                
-                model.update();
-                model.feasRelax(0, false, false, true);
-                model.write("debug.lp");
-                model.optimize();
-                z_obj << model.getObjective().getValue() << endl;
+            }
+            cout << "old check zs " << check_z_comp << endl;
 
-                // float solved_z[x_i.size()]; // unneeded, but just for understanding
-                float sum_difference = 0;
-                for(int i = 0; i < x_i.size(); i++) {
-                    // solved_z[i] = z_i[i].get(GRB_DoubleAttr_X);
-                    string x_c;
-                    string y_c;
-                    string z_c;
+            z_solve_model.update();
+            z_solve_model.feasRelax(0, false, false, true);
+            z_solve_model.write("debug.lp");
+            z_solve_model.optimize();
+            
+            for (int i = 0; i < x_i.size(); i++) {
+                float new_z = z_i[i].get(GRB_DoubleAttr_X);
+                z_abs_diff += abs(new_z - subs_z[i]);
+                subs_z[i] = new_z;
+            }
 
-                    float e_ix = x_i[i];
-                    float e_iy = y_i[i];
-                    float e_iz = z_i[i].get(GRB_DoubleAttr_X);
-
-                    set<int> neighbors_i = neighbors[i];
-                    set<int>::iterator itr;
+            float new_check_z = 0;
+            for (int i = 0; i < x_i.size(); i++) {
+                set<int> neighbors_i = neighbors[i];
+                set<int>::iterator itr;
+                float node_z_check = 0;
+                if (pinned_idx.find(i) == pinned_idx.end()) {
                     for (itr = neighbors_i.begin(); itr != neighbors_i.end(); itr++) {
                         int neighbor = *itr;
                         pair<int, int> edge = make_edge(i, neighbor);
                         float s = subs_scalars[scalar_idx[edge]];
+                        node_z_check += (subs_z[i] - subs_z[neighbor]) * s;
+                    }
+                    new_check_z += std::abs(node_z_check - load);
+                }
+            }
+            cout << "new check zs " << new_check_z << endl;
+
+            cout << "AFTER SOLVING Z VALUES" << endl;
+            for (int i = 0; i < subs_scalars.size(); i++) {
+                cout << subs_scalars[i] << " ";
+            }
+            cout << endl;
+            for (int i = 0; i < subs_z.size(); i++) {
+                cout << subs_z[i] << " ";
+            }
+            cout << endl;
+
+
+
+            cout << "max element in subs_z " << *std::max_element(subs_z.begin(), subs_z.end())<< endl;
+            cout << endl;
+            cout << "SOLVING FOR SCALARS" << endl;
+
+            GRBEnv scalar_solve_env = GRBEnv();
+            GRBModel scalar_solve_model = GRBModel(scalar_solve_env);
+
+            GRBVar scalars[edges.size()];
+            set<pair<int, int>>::iterator itr;
+            int i = 0;
+            for (itr = edges.begin(); itr != edges.end(); itr++) {
+                auto edge = *itr;
+                string s_i = "s_" + to_string(edge.first) + "_" + to_string(edge.second);
+                scalars[i++] = scalar_solve_model.addVar(0.0, GRB_INFINITY, 0.0, GRB_CONTINUOUS, s_i);
+            }
+
+            float check_scalar_x = 0;
+            float check_scalar_y = 0;
+            float check_scalar_z = 0;
+
+            for (int i = 0; i < x_i.size(); i++) {
+                set<int> neighbors_i = neighbors[i];
+                set<int>::iterator itr;
+                GRBLinExpr x_comp;
+                GRBLinExpr y_comp;
+                GRBLinExpr z_comp;
+
+                float e_ix = x_i[i];
+                float e_iy = y_i[i];
+                float e_iz = subs_z[i]; // use solved z 
+                float x_node_comp = 0;
+                float y_node_comp = 0;
+                float z_node_comp = 0;
+                if (pinned_idx.find(i) == pinned_idx.end()) {
+                    for (itr = neighbors_i.begin(); itr != neighbors_i.end(); itr++) {
+                        int neighbor = *itr;
+                        pair<int, int> edge = make_edge(i, neighbor);
                         float e_jx = x_i[neighbor];
                         float e_jy = y_i[neighbor];
-                        float e_jz = z_i[neighbor].get(GRB_DoubleAttr_X);
-                        x_c += "+ (" + to_string(e_ix) + " - " +  to_string(e_jx) + ") * " + to_string(s) + " ";
-                        y_c += "+ (" + to_string(e_iy) + " - " +  to_string(e_jy) + ") * " + to_string(s) + " ";
-                        z_c += "+ (" + to_string(e_iz) + " - " +  to_string(e_jz) + ") * " + to_string(s) + " ";
+                        float e_jz = subs_z[neighbor]; // use solved z
+                        GRBVar s = scalars[scalar_idx[edge]];
+                        x_comp += (e_ix - e_jx) * s;
+                        y_comp += (e_iy - e_jy) * s;
+                        z_comp += (e_iz - e_jz) * s;
+
+                        x_node_comp += (e_ix - e_jx) * subs_scalars[scalar_idx[edge]];
+                        y_node_comp += (e_iy - e_jy) * subs_scalars[scalar_idx[edge]];
+                        z_node_comp += (e_iz - e_jz) * subs_scalars[scalar_idx[edge]];
                     }
-                    debug_constraints << i << endl;
-                    debug_constraints << x_c << endl;
-                    debug_constraints << y_c << endl;
-                    debug_constraints << z_c << endl;
-                    if (iters > 1) { // no valid comparison atp
-                        if (pinned_idx.find(i) == pinned_idx.end()) {
-                            sum_difference += std::abs(z_i[i].get(GRB_DoubleAttr_X) - subs_z[i]);
-                            // if (iters == 999)
-                            //     cout << "node " << i << " " << std::abs(solved_z[i] - subs_z[i]) << endl;
-                        } else {
-                            // cout << "pinned" << endl;
-                        }
-                    }
-                    subs_z[i] = z_i[i].get(GRB_DoubleAttr_X);
-                }
-                // for (int i = 0; i < x_i.size(); i++) {
-                //     cout << "height " << i << " " << std::abs(solved_z[i] - subs_z[i]) << endl;
-                // }
-                z_abs_diff = sum_difference;
-                toggle_solve_scalar = true;
-                toggle_solve_z = false;
-            } else if (toggle_solve_scalar) {
-                GRBEnv env = GRBEnv();
-                GRBModel model = GRBModel(env);
+                    string x_constr = to_string(i)+"_xcmpnt";
+                    string y_constr = to_string(i)+"_ycmpnt";
+                    string z_constr = to_string(i)+"_zcmpnt";
+                    scalar_solve_model.addConstr(x_comp == 0.0, x_constr);
+                    scalar_solve_model.addConstr(y_comp == 0.0, y_constr);
+                    scalar_solve_model.addConstr((z_comp - load) == 0.0, z_constr);
 
-                GRBVar scalars[edges.size()];
-                set<pair<int, int>>::iterator itr;
-                int i = 0;
-                for (itr = edges.begin(); itr != edges.end(); itr++) {
-                    auto edge = *itr;
-                    string s_i = "s_" + to_string(edge.first) + "_" + to_string(edge.second);
-                    scalars[i++] = model.addVar(1.0, GRB_INFINITY, 0.0, GRB_CONTINUOUS, s_i);
-                }
-
-                for (int i = 0; i < x_i.size(); i++) {
-                    set<int> neighbors_i = neighbors[i];
-                    set<int>::iterator itr;
-                    GRBLinExpr x_comp;
-                    GRBLinExpr y_comp;
-                    GRBLinExpr z_comp;
-
-                    float e_ix = x_i[i];
-                    float e_iy = y_i[i];
-                    float e_iz = subs_z[i]; // use solved z 
-
-                    if (pinned_idx.find(i) == pinned_idx.end()) {
-                        for (itr = neighbors_i.begin(); itr != neighbors_i.end(); itr++) {
-                            int neighbor = *itr;
-                            pair<int, int> edge = make_edge(i, neighbor);
-                            float e_jx = x_i[neighbor];
-                            float e_jy = y_i[neighbor];
-                            float e_jz = subs_z[neighbor]; // use solved z
-                            GRBVar s = scalars[scalar_idx[edge]];
-                            x_comp += (e_ix - e_jx) * s;
-                            y_comp += (e_iy - e_jy) * s;
-                            z_comp += (e_iz - e_jz) * s;
-                        }
-                        string x_constr = to_string(i)+"_xcmpnt";
-                        string y_constr = to_string(i)+"_ycmpnt";
-                        string z_constr = to_string(i)+"_zcmpnt";
-                        model.addConstr(x_comp == 0.0, x_constr);
-                        model.addConstr(y_comp == 0.0, y_constr);
-                        model.addConstr((z_comp - load) == 0.0, z_constr);
-                    } 
-                }
-                
-                model.update();
-                model.feasRelax(0, false, false, true);
-                model.write("debug.lp");
-                model.optimize();
-
-                s_obj << model.getObjective().getValue() << endl;
-
-                // float solved_scalar[edges.size()]; // unneeded, but just for understanding
-                float sum_difference = 0;
-
-                for(int i = 0; i < edges.size(); i++) {
-                    // solved_scalar[i] = scalars[i].get(GRB_DoubleAttr_X);
-                    sum_difference += std::abs(scalars[i].get(GRB_DoubleAttr_X) - subs_scalars[i]);
-                }
-                
-                scalar_abs_diff = sum_difference;
-                toggle_solve_scalar = false;
-                toggle_solve_z = true;
-            }
-            
-            ofstream constraints;
-            constraints.open("constraints.txt");
-            
-            if (iters > 10) {
-                cout << "Hit 10 iters, terminating now" << endl;
-
-                for (int i = 0; i < x_i.size(); i++) {
-                    set<int> neighbors_i = neighbors[i];
-                    set<int>::iterator itr;
-                    float x_comp;
-                    float y_comp;
-                    float z_comp;
-
-                    float e_ix = x_i[i];
-                    float e_iy = y_i[i];
-                    float e_iz = subs_z[i]; // use solved z 
-
-                    if (pinned_idx.find(i) == pinned_idx.end()) {
-                        for (itr = neighbors_i.begin(); itr != neighbors_i.end(); itr++) {
-                            int neighbor = *itr;
-                            pair<int, int> edge = make_edge(i, neighbor);
-                            float e_jx = x_i[neighbor];
-                            float e_jy = y_i[neighbor];
-                            float e_jz = subs_z[neighbor]; // use solved z
-                            float s = subs_scalars[scalar_idx[edge]];
-                            x_comp += (e_ix - e_jx) * s;
-                            y_comp += (e_iy - e_jy) * s;
-                            z_comp += (e_iz - e_jz) * s;
-                        }
-                        constraints << "x_comp " << i << " " << x_comp << endl;
-                        constraints << "y_comp " << i << " " << y_comp << endl;
-                        constraints << "z_comp " << i << " " << z_comp - load << endl;
-                    } 
-                }
-                toggling = false;
+                    check_scalar_x += std::abs(x_node_comp);
+                    check_scalar_y += std::abs(y_node_comp);
+                    check_scalar_z += std::abs(z_node_comp - load);
+                } 
             }
 
-            // Checking for convergence
-            float z_update_diff = std::abs(prev_z_abs_diff - z_abs_diff);
-            float scalar_update_diff = std::abs(prev_scalar_abs_diff - scalar_abs_diff);
-            if (z_update_diff < 1e-8 && scalar_update_diff < 1e-8) {
-                cout << "Converged, terminating now" << endl;
-                cout << "Num iters: " << iters << endl;
-                cout << z_update_diff << endl;
-                cout << scalar_update_diff << endl;
-                for (int i = 0; i < x_i.size(); i++) {
-                    cout << "nodes " << endl;
-                    set<int> neighbors_i = neighbors[i];
-                    set<int>::iterator itr;
-                    float x_comp;
-                    float y_comp;
-                    float z_comp;
+            cout << "old check x " << check_scalar_x << endl;
+            cout << "old check x " << check_scalar_y << endl;
+            cout << "old check z " << check_scalar_z << endl;
 
-                    float e_ix = x_i[i];
-                    float e_iy = y_i[i];
-                    float e_iz = subs_z[i]; // use solved z 
+            scalar_solve_model.update();
+            scalar_solve_model.feasRelax(0, false, false, true);
+            scalar_solve_model.write("debug.lp");
+            scalar_solve_model.optimize();
 
-                    cout << "node " << i << " " << e_ix << " " << e_iy << " " << e_iz << endl;
+            for (auto itr = edges.begin(); itr != edges.end(); itr++) {
+                auto edge = *itr;
+                int s_idx = scalar_idx[edge];
+                GRBVar s = scalars[s_idx];
+                float new_s = s.get(GRB_DoubleAttr_X);
+                scalar_abs_diff += abs(new_s - subs_scalars[s_idx]);
+                subs_scalars[s_idx] = new_s;
+            }
 
-                    if (pinned_idx.find(i) == pinned_idx.end()) {
-                        // cout << "pinned" << endl;
-                        for (itr = neighbors_i.begin(); itr != neighbors_i.end(); itr++) {
-                            int neighbor = *itr;
-                            pair<int, int> edge = make_edge(i, neighbor);
-                            float e_jx = x_i[neighbor];
-                            float e_jy = y_i[neighbor];
-                            float e_jz = subs_z[neighbor]; // use solved z
-                            float s = subs_scalars[scalar_idx[edge]];
-                            x_comp += (e_ix - e_jx) * s;
-                            y_comp += (e_iy - e_jy) * s;
-                            z_comp += (e_iz - e_jz) * s;
-                            cout << "edge scalar " << i << " " << neighbor << " " << s << endl;
-                        }
-                        constraints << "x_comp " << i << " " << x_comp << endl;
-                        constraints << "y_comp " << i << " " << y_comp << endl;
-                        constraints << "z_comp " << i << " " << z_comp - load << endl;
-                    } 
-                }
-                toggling = false;
+            check_scalar_x = 0;
+            check_scalar_y = 0;
+            check_scalar_z = 0;
+            for (int i = 0; i < x_i.size(); i++) {
+                set<int> neighbors_i = neighbors[i];
+                set<int>::iterator itr;
+
+                float e_ix = x_i[i];
+                float e_iy = y_i[i];
+                float e_iz = subs_z[i]; // use solved z 
+                float x_node_comp = 0;
+                float y_node_comp = 0;
+                float z_node_comp = 0;
+                if (pinned_idx.find(i) == pinned_idx.end()) {
+                    for (itr = neighbors_i.begin(); itr != neighbors_i.end(); itr++) {
+                        int neighbor = *itr;
+                        pair<int, int> edge = make_edge(i, neighbor);
+                        float e_jx = x_i[neighbor];
+                        float e_jy = y_i[neighbor];
+                        float e_jz = subs_z[neighbor]; // use solved z
+
+                        x_node_comp += (e_ix - e_jx) * subs_scalars[scalar_idx[edge]];
+                        y_node_comp += (e_iy - e_jy) * subs_scalars[scalar_idx[edge]];
+                        z_node_comp += (e_iz - e_jz) * subs_scalars[scalar_idx[edge]];
+                    }
+                    check_scalar_x += std::abs(x_node_comp);
+                    check_scalar_y += std::abs(y_node_comp);
+                    check_scalar_z += std::abs(z_node_comp - load);
+                } 
+            }
+            cout << "new check x " << check_scalar_x << endl;
+            cout << "new check y " << check_scalar_y << endl;
+            cout << "new check z " << check_scalar_z << endl;
+
+
+            cout << "AFTER SOLVING SCALAR VALUES" << endl;
+            for (int i = 0; i < subs_scalars.size(); i++) {
+                cout << subs_scalars[i] << " ";
+            }
+            cout << endl;
+            for (int i = 0; i < subs_z.size(); i++) {
+                cout << subs_z[i] << " ";
+            }
+            cout << endl;
+
+
+            if (iters > 100) {
+                cout << "Hit 100 iters, terminating now" << endl;
+                cout << z_abs_diff << " " << scalar_abs_diff << endl;
+                break;
+            } else if (iters != 0 && z_abs_diff < 1e-8 && scalar_abs_diff < 1e-8) {
+                cout << "Converged at " << z_abs_diff << " " << scalar_abs_diff << endl;
+                break;
             } else {
-                cout << "Didn't converge" << endl;
-                cout << z_update_diff + scalar_update_diff << endl;
+                cout << "Changed " << z_abs_diff << " " << scalar_abs_diff << endl;
+                // Hasn't converged yet
             }
-            prev_z_abs_diff = z_abs_diff;
-            prev_scalar_abs_diff = scalar_abs_diff;
-            cout << "toggling " << toggling << endl;
-        }
+            iters++;
+
+            cout << endl << endl << endl;
+        } while (true);
 
         for (int i = 0; i < x_i.size(); i++) {
             float x = x_i[i];
