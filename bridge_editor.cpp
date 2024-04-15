@@ -416,8 +416,8 @@ void add_neighbor(map<int, set<int>>& m, int key, int neighbor) {
 }
 
 double get_random() {
-    static std::default_random_engine e(123);
-    static std::uniform_real_distribution<> dist(1, 11);
+    static std::default_random_engine e;
+    static std::uniform_real_distribution<> dist(100, 200);
     return dist(e);
 }
 
@@ -487,7 +487,7 @@ void constructBridge() {
     for (int i = 0; i < pinned.size(); i++) {
         pinned_idx.insert(pnt_idx_map[pinned[i]]);
     }
-
+    cout << "Number of pinned vertices: " << pinned_idx.size() << endl;
     vector<glm::vec3> bridge_points;
     try {
         double load = bridge_load / (x_i.size());
@@ -518,10 +518,10 @@ void constructBridge() {
             GRBEnv z_solve_env = GRBEnv();
             GRBModel z_solve_model = GRBModel(z_solve_env);
 
-            GRBVar z_i[x_i.size()];
+            vector<GRBVar> z_i;
             for (int i = 0; i < x_i.size(); i++) {
                 string z = "z_" + to_string(i);
-                z_i[i] = z_solve_model.addVar(-GRB_INFINITY, GRB_INFINITY, 0.0, GRB_CONTINUOUS, z);
+                z_i.push_back(z_solve_model.addVar(-GRB_INFINITY, GRB_INFINITY, 0.0, GRB_CONTINUOUS, z));
             }
 
             for (int i = 0; i < x_i.size(); i++) {
@@ -546,7 +546,7 @@ void constructBridge() {
                         x_comp += (e_ix - e_jx) * s;
                         y_comp += (e_iy - e_jy) * s;
                         z_comp += (e_iz - e_jz) * s;
-                    }
+                    } 
                     string x_constr = to_string(i)+"_xcmpnt";
                     string y_constr = to_string(i)+"_ycmpnt";
                     string z_constr = to_string(i)+"_zcmpnt";
@@ -574,13 +574,13 @@ void constructBridge() {
             GRBEnv scalar_solve_env = GRBEnv();
             GRBModel scalar_solve_model = GRBModel(scalar_solve_env);
 
-            GRBVar scalars[edges.size()];
+            vector<GRBVar> scalars;
             set<pair<int, int>>::iterator itr;
             int i = 0;
             for (itr = edges.begin(); itr != edges.end(); itr++) {
                 auto edge = *itr;
                 string s_i = "s_" + to_string(edge.first) + "_" + to_string(edge.second);
-                scalars[i++] = scalar_solve_model.addVar(1.0, GRB_INFINITY, 0.0, GRB_CONTINUOUS, s_i);
+                scalars.push_back(scalar_solve_model.addVar(0.0, GRB_INFINITY, 0.0, GRB_CONTINUOUS, s_i));
             }
 
             for (int i = 0; i < x_i.size(); i++) {
@@ -619,21 +619,18 @@ void constructBridge() {
             scalar_solve_model.write("debug.lp");
             scalar_solve_model.optimize();
 
-            int i_s = 0;
             for (auto itr = edges.begin(); itr != edges.end(); itr++) {
                 auto edge = *itr;
                 int s_idx = scalar_idx[edge];
-                if (s_idx != i_s) cout << "???" << endl;
                 GRBVar s = scalars[s_idx];
                 double new_s = s.get(GRB_DoubleAttr_X);
                 scalar_abs_diff += abs(new_s - subs_scalars[s_idx]);
                 subs_scalars[s_idx] = new_s;
-                i_s++;
             }
             debugConstraints("after_scalar_solve.txt", neighbors, pinned_idx, scalar_idx, subs_scalars, subs_z, x_i, y_i, iters);
 
             
-            if (iters > 1000) {
+            if (iters > 100) {
                 cout << "Hit 100 iters, terminating now" << endl;
                 cout << z_abs_diff << " " << scalar_abs_diff << endl;
                 break;
