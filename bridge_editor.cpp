@@ -314,15 +314,15 @@ void triangulateBoundary(vector<pair<double, double>> points, vector<pair<int, i
 //   new Bezier{{{10, 10}, {10, 0}}},
 //   new Bezier{{{10, 0}, {0, 0}}}};
 
-vector<Bezier*> curves = {new Bezier{{{210, 210}, {-210, 210}}},
-    new Bezier{{{-210, 210}, {-210, -210}}},
-    new Bezier{{{-210, -210}, {210, -210}}},
-    new Bezier{{{210, -210}, {210, 210}}}};
+// vector<Bezier*> curves = {new Bezier{{{210, 210}, {-210, 210}}},
+//     new Bezier{{{-210, 210}, {-210, -210}}},
+//     new Bezier{{{-210, -210}, {210, -210}}},
+//     new Bezier{{{210, -210}, {210, 210}}}};
     
-// vector<Bezier*> curves = {new Bezier{{{-210, 123}, {0, 56}, {210, 123}}},
-//     new Bezier{{{210, 123}, {210, -67}}},
-//     new Bezier{{{210, -67}, {0, 0}, {-210, -67}}},
-//     new Bezier{{{-210, -67}, {-210, 123}}}};
+vector<Bezier*> curves = {new Bezier{{{-210, 123}, {0, 56}, {210, 123}}},
+    new Bezier{{{210, 123}, {210, -67}}},
+    new Bezier{{{210, -67}, {0, 0}, {-210, -67}}},
+    new Bezier{{{-210, -67}, {-210, 123}}}};
 
 bool curvesReady;
 vector<pair<double, double>> points;
@@ -417,7 +417,7 @@ void add_neighbor(map<int, set<int>>& m, int key, int neighbor) {
 
 double get_random() {
     static std::default_random_engine e;
-    static std::uniform_real_distribution<> dist(100, 200);
+    static std::uniform_real_distribution<> dist(1, 200);
     return dist(e);
 }
 
@@ -487,7 +487,6 @@ void constructBridge() {
     for (int i = 0; i < pinned.size(); i++) {
         pinned_idx.insert(pnt_idx_map[pinned[i]]);
     }
-    cout << "Number of pinned vertices: " << pinned_idx.size() << endl;
     vector<glm::vec3> bridge_points;
     try {
         double load = bridge_load / (x_i.size());
@@ -521,7 +520,7 @@ void constructBridge() {
             vector<GRBVar> z_i;
             for (int i = 0; i < x_i.size(); i++) {
                 string z = "z_" + to_string(i);
-                z_i.push_back(z_solve_model.addVar(-GRB_INFINITY, GRB_INFINITY, 0.0, GRB_CONTINUOUS, z));
+                z_i.push_back(z_solve_model.addVar(0.0, GRB_INFINITY, 0.0, GRB_CONTINUOUS, z));
             }
 
             for (int i = 0; i < x_i.size(); i++) {
@@ -580,10 +579,10 @@ void constructBridge() {
             for (itr = edges.begin(); itr != edges.end(); itr++) {
                 auto edge = *itr;
                 string s_i = "s_" + to_string(edge.first) + "_" + to_string(edge.second);
-                scalars.push_back(scalar_solve_model.addVar(0.0, GRB_INFINITY, 0.0, GRB_CONTINUOUS, s_i));
+                scalars.push_back(scalar_solve_model.addVar(1, GRB_INFINITY, 0.0, GRB_CONTINUOUS, s_i));
             }
 
-            for (int i = 0; i < x_i.size(); i++) {
+            for (int i = 0; i < x_i.size(); i++) {ƒ
                 set<int> neighbors_i = neighbors[i];
                 set<int>::iterator itr;
                 GRBLinExpr x_comp;
