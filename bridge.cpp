@@ -3,6 +3,10 @@
 #include <fstream>
 #include <algorithm>
 
+#include <Eigen/Core>
+#include <Eigen/Sparse>
+#include <Eigen/Dense>
+
 #include "polyscope/polyscope.h"
 #include "polyscope/point_cloud.h"
 #include "polyscope/curve_network.h"
@@ -417,7 +421,7 @@ void add_neighbor(map<int, set<int>>& m, int key, int neighbor) {
 
 double get_random() {
     static std::default_random_engine e;
-    static std::uniform_real_distribution<> dist(100, 200);
+    static std::uniform_real_distribution<> dist(1, 100);
     return dist(e);
 }
 
@@ -489,183 +493,100 @@ void constructBridge() {
     }
     cout << "Number of pinned vertices: " << pinned_idx.size() << endl;
     vector<glm::vec3> bridge_points;
-    try {
-        double load = bridge_load / (x_i.size());
+    double load = bridge_load / (x_i.size());
 
-        set<pair<int, int>>::iterator itr;
-        map<pair<int, int>, int> scalar_idx;
-        int i = 0;
-        for (itr = edges.begin(); itr != edges.end(); itr++) {
-            auto edge = *itr;
-            scalar_idx[edge] = i++;
-        }
+    set<pair<int, int>>::iterator itr;
+    map<pair<int, int>, int> scalar_idx;
+    int i = 0;
+    for (itr = edges.begin(); itr != edges.end(); itr++) {
+        auto edge = *itr;
+        scalar_idx[edge] = i++;
+    }
 
-        // Start with random edge scalars
-        vector<double> subs_scalars(edges.size(), 0.0);
-        for (int i = 0; i < edges.size(); i++) {
-            subs_scalars[i] = get_random();
-        }
-        vector<double> subs_z(x_i.size(), 0.0);
+    // Start with random edge scalars
+    vector<double> subs_z(x_i.size(), 0.0);
+    for (int i = 0; i < x_i.size(); i++) {
+        subs_z[i] = get_random();
+    }
+    vector<double> subs_scalars(edges.size(), 0.0);
+    for (int i = 0; i < edges.size(); i++) {
+        subs_scalars[i] = get_random();
+    }
 
-        int iters = 0;
+    int num_nodes = (int)x_i.size();
+    int num_edges = (int)edges.size();
 
-        do {
-            debugConstraints("before_z_solve.txt", neighbors, pinned_idx, scalar_idx, subs_scalars, subs_z, x_i, y_i, iters);
-            
-            double z_abs_diff = 0;
-            double scalar_abs_diff = 0;
-
-            GRBEnv z_solve_env = GRBEnv();
-            GRBModel z_solve_model = GRBModel(z_solve_env);
-
-            vector<GRBVar> z_i;
-            for (int i = 0; i < x_i.size(); i++) {
-                string z = "z_" + to_string(i);
-                z_i.push_back(z_solve_model.addVar(-GRB_INFINITY, GRB_INFINITY, 0.0, GRB_CONTINUOUS, z));
-            }
-
-            for (int i = 0; i < x_i.size(); i++) {
-                set<int> neighbors_i = neighbors[i];
-                set<int>::iterator itr;
-                GRBLinExpr x_comp;
-                GRBLinExpr y_comp;
-                GRBLinExpr z_comp;
-
-                double e_ix = x_i[i];
-                double e_iy = y_i[i];
-                GRBVar e_iz = z_i[i];
-                if (pinned_idx.find(i) == pinned_idx.end()) {
-                    for (itr = neighbors_i.begin(); itr != neighbors_i.end(); itr++) {
-                        int neighbor = *itr;
-                        pair<int, int> edge = make_edge(i, neighbor);
-                        double e_jx = x_i[neighbor];
-                        double e_jy = y_i[neighbor];
-                        GRBVar e_jz = z_i[neighbor];
-                        double s = subs_scalars[scalar_idx[edge]];
-
-                        x_comp += (e_jx - e_ix) * s;
-                        y_comp += (e_jy - e_iy) * s;
-                        z_comp += (e_jz - e_iz) * s;
-                    } 
-                    string x_constr = to_string(i)+"_xcmpnt";
-                    string y_constr = to_string(i)+"_ycmpnt";
-                    string z_constr = to_string(i)+"_zcmpnt";
-                    z_solve_model.addConstr(x_comp == 0.0, x_constr);
-                    z_solve_model.addConstr(y_comp == 0.0, y_constr);
-                    z_solve_model.addConstr((z_comp - load) == 0.0, z_constr);
-                } else {
-                    z_solve_model.addConstr(z_i[i] == 0.0);
-                }
-            }
-
-            z_solve_model.update();
-            z_solve_model.feasRelax(0, false, false, true);
-            z_solve_model.write("debug.lp");
-            z_solve_model.optimize();
-            
-            for (int i = 0; i < x_i.size(); i++) {
-                double new_z = z_i[i].get(GRB_DoubleAttr_X);
-                z_abs_diff += abs(new_z - subs_z[i]);
-                subs_z[i] = new_z;
-            }
-            debugConstraints("after_z_solve.txt", neighbors, pinned_idx, scalar_idx, subs_scalars, subs_z, x_i, y_i, iters);
-
-
-            GRBEnv scalar_solve_env = GRBEnv();
-            GRBModel scalar_solve_model = GRBModel(scalar_solve_env);
-
-            vector<GRBVar> scalars;
-            set<pair<int, int>>::iterator itr;
-            int i = 0;
-            for (itr = edges.begin(); itr != edges.end(); itr++) {
-                auto edge = *itr;
-                string s_i = "s_" + to_string(edge.first) + "_" + to_string(edge.second);
-                scalars.push_back(scalar_solve_model.addVar(0.0, GRB_INFINITY, 0.0, GRB_CONTINUOUS, s_i));
-            }
-
-            for (int i = 0; i < x_i.size(); i++) {
-                set<int> neighbors_i = neighbors[i];
-                set<int>::iterator itr;
-                GRBLinExpr x_comp;
-                GRBLinExpr y_comp;
-                GRBLinExpr z_comp;
-
-                double e_ix = x_i[i];
-                double e_iy = y_i[i];
-                double e_iz = subs_z[i]; // use solved z 
-                if (pinned_idx.find(i) == pinned_idx.end()) {
-                    for (itr = neighbors_i.begin(); itr != neighbors_i.end(); itr++) {
-                        int neighbor = *itr;
-                        pair<int, int> edge = make_edge(i, neighbor);
-                        double e_jx = x_i[neighbor];
-                        double e_jy = y_i[neighbor];
-                        double e_jz = subs_z[neighbor]; // use solved z
-                        GRBVar s = scalars[scalar_idx[edge]];
-                        x_comp += (e_jx - e_ix) * s;
-                        y_comp += (e_jy - e_iy) * s;
-                        z_comp += (e_jz - e_iz) * s;
-                    }
-                    string x_constr = to_string(i)+"_xcmpnt";
-                    string y_constr = to_string(i)+"_ycmpnt";
-                    string z_constr = to_string(i)+"_zcmpnt";
-                    scalar_solve_model.addConstr(x_comp == 0.0, x_constr);
-                    scalar_solve_model.addConstr(y_comp == 0.0, y_constr);
-                    scalar_solve_model.addConstr((z_comp - load) == 0.0, z_constr);
-                } 
-            }
-
-            scalar_solve_model.update();
-            scalar_solve_model.feasRelax(0, false, false, true);
-            scalar_solve_model.write("debug.lp");
-            scalar_solve_model.optimize();
-
-            for (auto itr = edges.begin(); itr != edges.end(); itr++) {
-                auto edge = *itr;
+    Eigen::MatrixXd scalarConstraints(3 * num_nodes, num_edges);
+    Eigen::VectorXd bsolveScalar(3 * num_nodes);
+    for (int i = 0; i < num_nodes; i++) {
+        if (pinned_idx.find(i) == pinned_idx.end()) {
+            set<int> neighbors_i = neighbors[i];
+            set<int>::iterator itr;
+            for (itr = neighbors_i.begin(); itr != neighbors_i.end(); itr++) {
+                int neighbor = *itr;
+                pair<int, int> edge = make_edge(i, neighbor);
                 int s_idx = scalar_idx[edge];
-                GRBVar s = scalars[s_idx];
-                double new_s = s.get(GRB_DoubleAttr_X);
-                scalar_abs_diff += abs(new_s - subs_scalars[s_idx]);
-                subs_scalars[s_idx] = new_s;
+                scalarConstraints(i, s_idx) = x_i[i] - x_i[neighbor];
+                scalarConstraints(i + 1, s_idx) = y_i[i] - y_i[neighbor];
+                scalarConstraints(i + 2, s_idx) = subs_z[i] - subs_z[neighbor];
             }
-            debugConstraints("after_scalar_solve.txt", neighbors, pinned_idx, scalar_idx, subs_scalars, subs_z, x_i, y_i, iters);
-
-            
-            if (iters > 100) {
-                cout << "Hit 100 iters, terminating now" << endl;
-                cout << z_abs_diff << " " << scalar_abs_diff << endl;
-                break;
-            } 
-            else if (iters != 0 && z_abs_diff < 1e-8 && scalar_abs_diff < 1e-8) {
-                cout << "Converged at " << z_abs_diff << " " << scalar_abs_diff << endl;
-                for (int i = 0; i < subs_z.size(); i++) {
-                    cout << i << ": " << x_i[i] << " " << y_i[i] << " " << subs_z[i] << endl;
-                }
-                for (auto itr = edges.begin(); itr != edges.end(); itr++) {
-                    auto edge = *itr;
-                    int s_idx = scalar_idx[edge];
-                    cout << edge.first << " " << edge.second << ": " << subs_scalars[s_idx] << endl;
-                }
-                break;
-            } else {
-                cout << "Changed " << z_abs_diff << " " << scalar_abs_diff << endl;
-            }
-            iters++;
-
-        } while (true);
-
-        for (int i = 0; i < x_i.size(); i++) {
-            double x = x_i[i];
-            double z = subs_z[i];
-            double y = y_i[i];
-            bridge_points.push_back(
-                glm::vec3{x, z, y}
-            );
+            bsolveScalar(i) = 0;
+            bsolveScalar(i + 1) = 0;
+            bsolveScalar(i + 2) = load;
         }
-    } catch(GRBException e) {
-        cout << "Error code = " << e.getErrorCode() << endl;
-        cout << e.getMessage() << endl;
-    } catch(...) {
-        cout << "Exception during optimization" << endl;
+    }
+    auto scalars = scalarConstraints.bdcSvd(Eigen::ComputeThinU | Eigen::ComputeThinV).solve(bsolveScalar);
+    cout << scalarConstraints << endl;
+    cout << bsolveScalar << endl;
+    cout << scalars << endl;
+    
+
+
+    Eigen::MatrixXd nodeConstraints(num_nodes, num_nodes);
+    for (int i = 0; i < x_i.size(); i++) {
+        if (pinned_idx.find(i) == pinned_idx.end()) {
+            set<int> neighbors_i = neighbors[i];
+            set<int>::iterator itr;
+            double z_i_scalar = 0.0;
+            for (itr = neighbors_i.begin(); itr != neighbors_i.end(); itr++) {
+                int neighbor = *itr;
+                pair<int, int> edge = make_edge(i, neighbor);
+                double s = subs_scalars[scalar_idx[edge]];
+                nodeConstraints(i, neighbor) = -s;
+                z_i_scalar += s;
+            }
+            nodeConstraints(i, i) = z_i_scalar;
+        }
+    }
+    Eigen::VectorXd bsolveZ(num_nodes);
+    for (int i =0 ; i < x_i.size(); i++) {
+        if (pinned_idx.find(i) == pinned_idx.end()) {
+            bsolveZ(i) = load;
+        } else {
+            bsolveZ(i) = 0;
+        }
+    }
+    bsolveZ.setConstant(load);
+    cout << nodeConstraints << endl;
+    cout << bsolveZ << endl;
+    auto z_values = nodeConstraints.bdcSvd(Eigen::ComputeThinU | Eigen::ComputeThinV).solve(bsolveZ);
+    for (int i = 0; i < num_nodes; i++) {
+        if (pinned_idx.find(i) != pinned_idx.end()) {
+            subs_z[i] = 0.0;
+        } else {
+            subs_z[i] = z_values[i];
+        }
+    }
+    cout << z_values << endl;
+
+    debugConstraints("test.txt", neighbors, pinned_idx, scalar_idx, subs_scalars, subs_z, x_i, y_i, 0);
+    for (int i = 0; i < x_i.size(); i++) {
+        double x = x_i[i];
+        double z = subs_z[i];
+        double y = y_i[i];
+        bridge_points.push_back(
+            glm::vec3{x, z, y}
+        );
     }
 
     vector<array<int, 2>> vec_edges;
