@@ -1,5 +1,6 @@
 #include <unordered_map>
 #include <iostream>
+#include <fstream>
 
 #include "polyscope/polyscope.h"
 #include "polyscope/point_cloud.h"
@@ -72,6 +73,10 @@ extern "C" struct triangulateio {
     We construct this boundary using a set of Bezier curves that form a closed loop, defined as follows:
     ∀ curves i with endpoints (a, b)->(c, d): ∃ curves x, y with endpoints (a, b) and (c, d)
 *********************************************************************************************************/
+vector<array<pair<double, double>, 3>> triangles;
+unordered_map<pair<double, double>, set<int>, PairHash> point_tri_map;
+unordered_map<int, pair<double, double>> tri_centroid;
+double increment = 0.1;
 
 struct Bezier {
   // User-defined parameters
@@ -101,7 +106,7 @@ pair<double, double> deCastelJau(const vector<pair<double, double>>& controlPoin
 
 void bezierCurve(Bezier* curve) {
   vector<pair<double, double>> p;
-  for (double t = 0; t <= 1.0; t += .1) {
+  for (double t = 0; t <= 1.0; t += increment) {
     p.push_back(deCastelJau(curve->controlPoints, t));
   }
   curve->points = p;
@@ -197,6 +202,11 @@ void constructBoundary(vector<Bezier*> curves, vector<pair<double, double>>& bou
     boundarySize = (int)pointNeighbors.size();
 }
 
+pair<double, double> triCentroid(pair<double, double> p1, pair<double, double> p2, pair<double, double> p3) {
+    pair<double, double> p = pair<double, double>{(p1.first + p2.first + p3.first)/3.0, (p1.second + p2.second + p3.second)/3.0};
+    return p;
+}
+
 void triangulateBoundary(vector<pair<double, double>> points, vector<pair<int, int>> segments, int size, bool q, bool D, double maxArea, bool Y, int maxS,
                          vector<pair<double, double>>& points_out, vector<pair<int, int>>& edges_out) {
     double* points_in = new double[2 * points.size()];
@@ -246,6 +256,21 @@ void triangulateBoundary(vector<pair<double, double>> points, vector<pair<int, i
         e_out.push_back(pair<int, int>{trio_out->trianglelist[3 * i] , trio_out->trianglelist[3 * i + 1]});
         e_out.push_back(pair<int, int>{trio_out->trianglelist[3 * i], trio_out->trianglelist[3 * i + 2]});
         e_out.push_back(pair<int, int>{trio_out->trianglelist[3 * i + 1], trio_out->trianglelist[3 * i + 2]});
+        int v1 = trio_out->trianglelist[3 * i];
+        int v2 = trio_out->trianglelist[3 * i + 1];
+        int v3 = trio_out->trianglelist[3 * i + 2];
+        pair<double, double> t_1 = p_out[v1];
+        pair<double, double> t_2 = p_out[v2];
+        pair<double, double> t_3 = p_out[v3];
+        triangles.push_back(array<pair<double, double>, 3>{t_1, t_2, t_3});
+        
+        int tri_idx = triangles.size() - 1;
+        
+        point_tri_map[t_1].insert(tri_idx);
+        point_tri_map[t_2].insert(tri_idx);
+        point_tri_map[t_3].insert(tri_idx);
+
+        tri_centroid[tri_idx] = triCentroid(t_1, t_2, t_3);
     }
     points_out = p_out;
     edges_out = e_out;
@@ -257,7 +282,7 @@ void triangulateBoundary(vector<pair<double, double>> points, vector<pair<int, i
 //   new Bezier{{{6, 15}, {-3, 9}}},
 //   new Bezier{{{-3, 9}, {0, 0}}}};
 
-// vector<Bezier*> curves = {new Bezier{{{0, 0}, {0, 1000}}}, 
+// vector<Bezier*> curves = {new Bezier{{{0, 0}, {0, 10}}}, 
 //   new Bezier{{{0, 10}, {10, 10}}},
 //   new Bezier{{{10, 10}, {10, 0}}},
 //   new Bezier{{{10, 0}, {0, 0}}}};
@@ -285,6 +310,7 @@ vector<pair<double, double>> p_out;
 vector<pair<int, int>> e_out;
 vector<pair<double, double>> pinned;
 bool triReady = false;
+float bridge_load = 2000;
 
 void visualizeBoundary() {
     vector<glm::vec3> bPoints;
@@ -314,6 +340,34 @@ void visualizeTriangulation() {
         tEdges.push_back({e_out[i].first, e_out[i].second});
     }
     polyscope::registerCurveNetwork("Triangulated Boundary", tPoints, tEdges);
+
+    vector<array<int, 2>> dual_edges;
+    vector<glm::vec3> dual_points;
+    for (int i = 0; i < triangles.size(); i++) {
+        dual_points.push_back(glm::vec3{1.05 * (tri_centroid[i].first), 0, 1.05 * (tri_centroid[i].second) - 300});
+    }
+    for (int i = 0; i < p_out.size(); i++) {
+        set<int> triNeighbors = point_tri_map[p_out[i]];
+        // cout << triNeighbors.size() << endl;
+        set<int>::iterator itr;
+        multiset<pair<double, int>> mset;
+        for (itr = triNeighbors.begin(); itr != triNeighbors.end(); itr++) {
+            int tri_idx = *itr;
+            pair<double, double> centroid = tri_centroid[tri_idx];
+            double angle = atan2((centroid.second - p_out[i].second), (centroid.first - p_out[i].first));
+            mset.insert(pair<double, int>{angle, tri_idx});
+        }
+
+        vector<int> in_order;
+        for (const auto& p: mset) {
+            in_order.push_back(p.second);
+        }
+        for (int j = 0; j < in_order.size() - 1; j++) {
+            dual_edges.push_back({in_order[j], in_order[j + 1]});
+        }
+        dual_edges.push_back({in_order[in_order.size() - 1], in_order[0]});
+    }
+    // polyscope::registerCurveNetwork("Dual figure", dual_points, dual_edges);
 }
 
 pair<int, int> make_edge(int x, int y) {
@@ -335,20 +389,102 @@ void add_neighbor(map<int, set<int>>& m, int key, int neighbor) {
 }
 
 float get_random() {
+    return 1;
     static std::default_random_engine e;
     static std::uniform_real_distribution<> dist(1, 11);
     return dist(e);
 }
 
+void debugConstraints(string debugFileName, map<int, set<int>> neighbors, set<int> pinned, map<pair<int, int>, int> scalar_idx, 
+                        vector<double> subs_scalars, vector<double> subs_z, unordered_map<int, double> x_i, unordered_map<int, double> y_i, int iter) {
+    
+    std::fstream debug(debugFileName, std::ios::out | std::ios::app);
+    double load = bridge_load / x_i.size();
+    double check_x = 0;
+    double check_y = 0;
+    double check_z = 0;
+    for (int i = 0; i < x_i.size(); i++) {
+        set<int> neighbors_i = neighbors[i];
+        set<int>::iterator itr;
+        double e_ix = x_i[i];
+        double e_iy = y_i[i];
+        double e_iz = subs_z[i];
+
+        double x_comp = 0;
+        double y_comp = 0;
+        double z_comp = 0;
+        if (pinned.find(i) == pinned.end()) {
+            for (itr = neighbors_i.begin(); itr != neighbors_i.end(); itr++) {
+                int neighbor = *itr;
+                pair<int, int> edge = make_edge(i, neighbor);
+                double e_jx = x_i[neighbor];
+                double e_jy = y_i[neighbor];
+                double e_jz = subs_z[neighbor];
+                double s = subs_scalars[scalar_idx[edge]];
+
+                x_comp += (e_ix - e_jx) * s;
+                y_comp += (e_iy - e_jy) * s;
+                z_comp += (e_iz - e_jz) * s;
+            }
+            check_x += abs(x_comp);
+            check_y += abs(y_comp);
+            check_z += abs(z_comp - load);
+        }
+    }
+    debug << "ITERATION: " << iter << endl;
+    debug << "constraint error in x: " << check_x << endl;
+    debug << "constraint error in y: " << check_y << endl;
+    debug << "constraint error in z: " << check_z << endl;
+}
+
+vector<float> visualizeForce(map<int, set<int>> neighbors, set<int> pinned, map<pair<int, int>, int> scalar_idx, 
+                        vector<double> subs_scalars, vector<double> subs_z, vector<double> x_i, vector<double> y_i) {
+    
+    double load = bridge_load / x_i.size();
+    double check_x = 0;
+    double check_y = 0;
+    double check_z = 0;
+    vector<float> forces;
+    for (int i = 0; i < x_i.size(); i++) {
+        set<int> neighbors_i = neighbors[i];
+        set<int>::iterator itr;
+        double e_ix = x_i[i];
+        double e_iy = y_i[i];
+        double e_iz = subs_z[i];
+
+        double x_comp = 0;
+        double y_comp = 0;
+        double z_comp = 0;
+        if (pinned.find(i) == pinned.end()) {
+            for (itr = neighbors_i.begin(); itr != neighbors_i.end(); itr++) {
+                int neighbor = *itr;
+                pair<int, int> edge = make_edge(i, neighbor);
+                double e_jx = x_i[neighbor];
+                double e_jy = y_i[neighbor];
+                double e_jz = subs_z[neighbor];
+                double s = subs_scalars[scalar_idx[edge]];
+
+                x_comp += (e_ix - e_jx) * s;
+                y_comp += (e_iy - e_jy) * s;
+                z_comp += (e_iz - e_jz) * s;
+            }
+            float forceResidual = abs(x_comp) + abs(y_comp) + abs(z_comp - load);
+            forces.push_back(forceResidual);
+        } else {
+            forces.push_back(0);
+        }
+    }
+    return forces;
+}
+
 void constructBridge() {
-    unordered_map<int, double> x_i;
-    unordered_map<int, double> y_i;
+    vector<double> x_i;
+    vector<double> y_i;
     unordered_map<pair<double, double>, int, PairHash> pnt_idx_map;
     for (int i = 0; i < p_out.size(); i++) {
-        x_i[i] = p_out[i].first;
-        y_i[i] = p_out[i].second;
+        x_i.push_back(p_out[i].first);
+        y_i.push_back(p_out[i].second);
         pnt_idx_map[p_out[i]] = i;
-        cout << "point " << i << " " << x_i[i] << " " << y_i[i] << endl;
     }
 
     map<int, set<int>> neighbors;
@@ -366,33 +502,29 @@ void constructBridge() {
         cout << "pinned " << pnt_idx_map[pinned[i]] << endl;
     }
 
-    vector<glm::vec3> bridge_points;
+    double load = bridge_load / (x_i.size());
+
+    set<pair<int, int>>::iterator itr;
+    map<pair<int, int>, int> scalar_idx;
+    int i = 0;
+    for (itr = edges.begin(); itr != edges.end(); itr++) {
+        auto edge = *itr;
+        scalar_idx[edge] = i++;
+    }
+
+    vector<double> subs_scalars;
+    for (int i = 0; i < edges.size(); i++) {
+        subs_scalars.push_back(1.0);
+    }
+    vector<double> subs_z(x_i.size(), 0.0);
+
+    vector<float> forceResiduals;
     try {
-        double total_load = 2000.0;
-        double load = total_load / (x_i.size());
-
-        set<pair<int, int>>::iterator itr;
-        map<pair<int, int>, int> scalar_idx;
-        int i = 0;
-        for (itr = edges.begin(); itr != edges.end(); itr++) {
-            auto edge = *itr;
-            scalar_idx[edge] = i++;
-        }
-
-        // Start with random edge scalars
-        float subs_scalars[edges.size()];
-        for (int i = 0; i < edges.size(); i++) {
-            subs_scalars[i] = get_random();
-        }
-        float subs_z[x_i.size()];
-
         int iters = 0;
-        // bool toggling = true;
-
         float prev_z_abs_diff = 1e8;
         float prev_scalar_abs_diff = 1e8;
+
         while (true) {
-            iters++;
             float z_abs_diff = 0;
             float scalar_abs_diff = 0;
 
@@ -404,7 +536,7 @@ void constructBridge() {
                 string z = "z_" + to_string(i);
                 z_i[i] = z_model.addVar(-GRB_INFINITY, GRB_INFINITY, 0.0, GRB_CONTINUOUS, z);
             }
-
+            GRBQuadExpr forceResidualsZ;
             for (int i = 0; i < x_i.size(); i++) {
                 set<int> neighbors_i = neighbors[i];
                 set<int>::iterator itr;
@@ -418,37 +550,29 @@ void constructBridge() {
                 if (pinned_idx.find(i) == pinned_idx.end()) {
                     for (itr = neighbors_i.begin(); itr != neighbors_i.end(); itr++) {
                         int neighbor = *itr;
-                        // cout << neighbor << " ";
                         pair<int, int> edge = make_edge(i, neighbor);
+                        float s = subs_scalars[scalar_idx[edge]];
+
                         float e_jx = x_i[neighbor];
                         float e_jy = y_i[neighbor];
                         GRBVar e_jz = z_i[neighbor];
-                        float s = subs_scalars[scalar_idx[edge]];
 
                         x_comp += (e_ix - e_jx) * s;
                         y_comp += (e_iy - e_jy) * s;
                         z_comp += (e_iz - e_jz) * s;
                     }
-                    string x_constr = to_string(i)+"_xcmpnt";
-                    string y_constr = to_string(i)+"_ycmpnt";
-                    string z_constr = to_string(i)+"_zcmpnt";
-                    z_model.addConstr(x_comp == 0.0, x_constr);
-                    z_model.addConstr(y_comp == 0.0, y_constr);
-                    z_model.addConstr((z_comp - load) == 0.0, z_constr);
+                    forceResidualsZ += (x_comp * x_comp) + (y_comp * y_comp) + ((z_comp - load) * (z_comp - load));
                 } else {
                     z_model.addConstr(z_i[i] == 0.0);
                 }
             }
-            
+            z_model.setObjective(forceResidualsZ);
             z_model.update();
-            z_model.feasRelax(0, false, false, true);
             z_model.write("debug.lp");
             z_model.optimize();
 
-            float solved_z[x_i.size()]; // unneeded, but just for understanding
             for(int i = 0; i < x_i.size(); i++) {
-                solved_z[i] = z_i[i].get(GRB_DoubleAttr_X);
-                subs_z[i] = solved_z[i];
+                subs_z[i] = z_i[i].get(GRB_DoubleAttr_X);
             }
             
             GRBEnv s_env = GRBEnv();
@@ -460,82 +584,66 @@ void constructBridge() {
             for (itr = edges.begin(); itr != edges.end(); itr++) {
                 auto edge = *itr;
                 string s_i = "s_" + to_string(edge.first) + "_" + to_string(edge.second);
-                scalars[i++] = s_model.addVar(1.0, GRB_INFINITY, 0.0, GRB_CONTINUOUS, s_i);
+                scalars[i] = s_model.addVar(0.0, GRB_INFINITY, 0.0, GRB_CONTINUOUS, s_i);
+                scalars[i].set(GRB_DoubleAttr_Start, subs_scalars[i]);
+                i++;
             }
 
+            GRBQuadExpr forceResidualsS;
             for (int i = 0; i < x_i.size(); i++) {
                 set<int> neighbors_i = neighbors[i];
                 set<int>::iterator itr;
                 GRBLinExpr x_comp;
                 GRBLinExpr y_comp;
                 GRBLinExpr z_comp;
+                GRBLinExpr scalar_const;
 
                 float e_ix = x_i[i];
                 float e_iy = y_i[i];
-                float e_iz = subs_z[i]; // use solved z 
+                float e_iz = subs_z[i];
 
                 if (pinned_idx.find(i) == pinned_idx.end()) {
                     for (itr = neighbors_i.begin(); itr != neighbors_i.end(); itr++) {
                         int neighbor = *itr;
                         pair<int, int> edge = make_edge(i, neighbor);
+                        GRBVar s = scalars[scalar_idx[edge]];
+
                         float e_jx = x_i[neighbor];
                         float e_jy = y_i[neighbor];
-                        float e_jz = subs_z[neighbor]; // use solved z
-                        GRBVar s = scalars[scalar_idx[edge]];
+                        float e_jz = subs_z[neighbor];
+                        
                         x_comp += (e_ix - e_jx) * s;
                         y_comp += (e_iy - e_jy) * s;
                         z_comp += (e_iz - e_jz) * s;
+                        scalar_const += s;
                     }
-                    string x_constr = to_string(i)+"_xcmpnt";
-                    string y_constr = to_string(i)+"_ycmpnt";
-                    string z_constr = to_string(i)+"_zcmpnt";
-                    s_model.addConstr(x_comp == 0.0, x_constr);
-                    s_model.addConstr(y_comp == 0.0, y_constr);
-                    s_model.addConstr((z_comp - load) == 0.0, z_constr);
+                    string scalar_constr = to_string(i)+"_scalar";
+                    s_model.addConstr(scalar_const >= 1.0, scalar_constr);
+                    forceResidualsS += (x_comp * x_comp) + (y_comp * y_comp) + ((z_comp - load) * (z_comp - load));
                 } 
             }
-            
+            s_model.setObjective(forceResidualsS);
             s_model.update();
-            s_model.feasRelax(0, false, false, true);
             s_model.write("debug.lp");
             s_model.optimize();
 
             float solved_scalar[edges.size()]; // unneeded, but just for understanding
 
-            for(int i = 0; i < edges.size(); i++) {
-                solved_scalar[i] = scalars[i].get(GRB_DoubleAttr_X);
-                subs_scalars[i] = solved_scalar[i];
+            i = 0;
+            for(itr = edges.begin(); itr != edges.end(); itr++) {
+                subs_scalars[i] = scalars[i].get(GRB_DoubleAttr_X);
+                i++;
             }
-            
-            if (iters > 1000) {
-                cout << "Hit 1000 iters, terminating now" << endl;
+
+            if (s_model.getObjective().getValue() < 1e-3) {
+                cout << "Objective is < .001" << endl;
+                forceResiduals = visualizeForce(neighbors, pinned_idx, scalar_idx, subs_scalars, subs_z, x_i, y_i);
                 break;
             }
 
-            // Checking for convergence
-            float z_update_diff = std::abs(prev_z_abs_diff - z_abs_diff);
-            float scalar_update_diff = std::abs(prev_scalar_abs_diff - scalar_abs_diff);
-            if (z_update_diff < 1e-8 && scalar_update_diff < 1e-8) {
-                cout << "Converged, terminating now" << endl;
-                cout << "Num iters: " << iters << endl;
-                cout << z_update_diff << endl;
-                cout << scalar_update_diff << endl;
-                break;
-            } else {
-                cout << "Didn't converge" << endl;
-                cout << z_update_diff + scalar_update_diff << endl;
-            }
             prev_z_abs_diff = z_abs_diff;
             prev_scalar_abs_diff = scalar_abs_diff;
-        }
-
-        for (int i = 0; i < x_i.size(); i++) {
-            float x = x_i[i];
-            float z = subs_z[i];
-            float y = y_i[i];
-            bridge_points.push_back(
-                glm::vec3{x, z, y}
-            );
+            iters++;
         }
     } catch(GRBException e) {
         cout << "Error code = " << e.getErrorCode() << endl;
@@ -544,13 +652,36 @@ void constructBridge() {
         cout << "Exception during optimization" << endl;
     }
 
+    vector<glm::vec3> bridge_points;
+    for (int i = 0; i < x_i.size(); i++) {
+        float x = x_i[i];
+        float z = subs_z[i];
+        float y = y_i[i];
+        bridge_points.push_back(
+            glm::vec3{x, z, y}
+        );
+    }
+
     vector<array<int, 2>> vec_edges;
     for (auto &p : edges) {
         array<int, 2> arr = {p.first, p.second};
         vec_edges.push_back(arr);
     }
+    std::vector<std::array<double, 3>> edgeColor(edges.size());
+    i = 0;
+    for (itr = edges.begin(); itr != edges.end(); itr++) {
+        edgeColor[i] = {subs_scalars[i], 0, 0};
+        i++;
+    }
+    std::vector<std::array<double, 3>> forceColor(x_i.size());
+    for (size_t i = 0; i < x_i.size(); i++) {
+        forceColor[i] = {0, forceResiduals[i], 0};
+    }
+    polyscope::registerPointCloud("network points", bridge_points);
+    polyscope::getPointCloud("network points")->addColorQuantity("forces", forceColor);
 
     polyscope::registerCurveNetwork("my network", bridge_points, vec_edges);
+    polyscope::getCurveNetwork("my network")->addEdgeColorQuantity("scalars", edgeColor);
 }
 
 void drawImGui() {
@@ -578,7 +709,7 @@ void drawImGui() {
     }
 
     ImGui::Separator();
-    
+    ImGui::InputDouble("Bezier increment granularity", &increment);
     if (ImGui::Button("Construct Boundary")) {
         constructBoundary(curves, points, segments, in_size);
         curvesReady = true;
@@ -604,6 +735,8 @@ void drawImGui() {
             triReady = true;
         }
     }
+    ImGui::Separator();
+    ImGui::InputFloat("Total vertical load on bridge", &bridge_load);
     if (ImGui::Button("Construct Bridge")) {
         if (triReady) {
             constructBridge();

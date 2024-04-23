@@ -219,6 +219,8 @@ void constructBoundary(vector<Bezier*> curves, vector<pair<double, double>>& bou
     boundarySize = (int)pointNeighbors.size();
 }
 
+
+
 pair<double, double> triCentroid(pair<double, double> p1, pair<double, double> p2, pair<double, double> p3) {
     pair<double, double> p = pair<double, double>{(p1.first + p2.first + p3.first)/3.0, (p1.second + p2.second + p3.second)/3.0};
     return p;
@@ -309,20 +311,20 @@ void triangulateBoundary(vector<pair<double, double>> points, vector<pair<int, i
 //   new Bezier{{{6, 15}, {-3, 9}}},
 //   new Bezier{{{-3, 9}, {0, 0}}}};
 
-// vector<Bezier*> curves = {new Bezier{{{0, 0}, {0, 10}}}, 
-//   new Bezier{{{0, 10}, {10, 10}}},
-//   new Bezier{{{10, 10}, {10, 0}}},
-//   new Bezier{{{10, 0}, {0, 0}}}};
+vector<Bezier*> curves = {new Bezier{{{0, 0}, {0, 10}}}, 
+  new Bezier{{{0, 10}, {10, 10}}},
+  new Bezier{{{10, 10}, {10, 0}}},
+  new Bezier{{{10, 0}, {0, 0}}}};
 
 // vector<Bezier*> curves = {new Bezier{{{210, 210}, {-210, 210}}},
 //     new Bezier{{{-210, 210}, {-210, -210}}},
 //     new Bezier{{{-210, -210}, {210, -210}}},
 //     new Bezier{{{210, -210}, {210, 210}}}};
     
-vector<Bezier*> curves = {new Bezier{{{-210, 123}, {0, 56}, {210, 123}}},
-    new Bezier{{{210, 123}, {210, -67}}},
-    new Bezier{{{210, -67}, {0, 0}, {-210, -67}}},
-    new Bezier{{{-210, -67}, {-210, 123}}}};
+// vector<Bezier*> curves = {new Bezier{{{-210, 123}, {0, 56}, {210, 123}}},
+//     new Bezier{{{210, 123}, {210, -67}}},
+//     new Bezier{{{210, -67}, {0, 0}, {-210, -67}}},
+//     new Bezier{{{-210, -67}, {-210, 123}}}};
 
 bool curvesReady;
 vector<pair<double, double>> points;
@@ -579,7 +581,10 @@ void constructBridge() {
             for (itr = edges.begin(); itr != edges.end(); itr++) {
                 auto edge = *itr;
                 string s_i = "s_" + to_string(edge.first) + "_" + to_string(edge.second);
-                scalars.push_back(scalar_solve_model.addVar(1, GRB_INFINITY, 0.0, GRB_CONTINUOUS, s_i));
+                auto s = scalar_solve_model.addVar(1, GRB_INFINITY, 0.0, GRB_CONTINUOUS, s_i);
+                s.set(GRB_DoubleAttr_Start, subs_scalars[i]);
+                scalars.push_back(s);
+                i++;
             }
 
             for (int i = 0; i < x_i.size(); i++) {

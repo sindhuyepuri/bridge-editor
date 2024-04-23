@@ -22,7 +22,7 @@ add_subdirectory(polyscope)
 
 add_library(triangle triangle/triangle.c)
 
-add_executable(${CMAKE_PROJECT_NAME} bridge_editor.cpp)
+add_executable(${CMAKE_PROJECT_NAME} bridge.cpp)
 
 target_link_libraries(${PROJECT_NAME} ${GUROBI_CXX_LIBRARY} ${GUROBI_LIBRARY})
 
