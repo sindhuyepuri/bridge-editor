@@ -5,6 +5,7 @@
 #include "polyscope/polyscope.h"
 #include "polyscope/point_cloud.h"
 #include "polyscope/curve_network.h"
+#include "polyscope/pick.h"
 
 #include "gurobi_c++.h"
 #include "gurobi_c.h"
@@ -77,6 +78,7 @@ vector<array<pair<double, double>, 3>> triangles;
 unordered_map<pair<double, double>, set<int>, PairHash> point_tri_map;
 unordered_map<int, pair<double, double>> tri_centroid;
 double increment = 0.1;
+bool pinSelectMode = false;
 
 struct Bezier {
   // User-defined parameters
@@ -314,19 +316,56 @@ float bridge_load = 2000;
 
 void visualizeBoundary() {
     vector<glm::vec3> bPoints;
+    for (int i = 0; i < points.size(); i++) {
+        glm::vec3 pnt{points[i].first, 0, points[i].second};
+        bPoints.push_back(pnt);
+    }
+    polyscope::registerPointCloud("Boundary", bPoints);
+}
+
+void visualizePinned() {
     vector<glm::vec3> pinnedPoints;
+    for (int i = 0; i < pinned.size(); i++) {
+        glm::vec3 pnt{pinned[i].first, 0, pinned[i].second};
+        pinnedPoints.push_back(pnt);
+    }
     for (int i = 0; i < curves.size(); i++) {
-        vector<pair<double, double>> p = curves[i]->points;
-        for (int j = 0; j < p.size(); j++) {
-            glm::vec3 pnt{p[j].first, 0, p[j].second};
-            bPoints.push_back(pnt);
-            if (curves[i]->pinnedCurve) {
+        if (curves[i]->pinnedCurve) {
+            vector<pair<double, double>> p = curves[i]->points;
+            for (int j = 0; j < p.size(); j++) {
+                glm::vec3 pnt{p[j].first, 0, p[j].second};
                 pinnedPoints.push_back(pnt);
                 pinned.push_back(p[j]);
             }
         }
     }
-    polyscope::registerPointCloud("Boundary", bPoints);
+    polyscope::registerPointCloud("Pinned Points", pinnedPoints);
+}
+
+// void visualizeBoundary() {
+//     vector<glm::vec3> bPoints;
+//     vector<glm::vec3> pinnedPoints;
+//     for (int i = 0; i < curves.size(); i++) {
+//         vector<pair<double, double>> p = curves[i]->points;
+//         for (int j = 0; j < p.size(); j++) {
+//             glm::vec3 pnt{p[j].first, 0, p[j].second};
+//             bPoints.push_back(pnt);
+//             if (curves[i]->pinnedCurve) {
+//                 pinnedPoints.push_back(pnt);
+//                 pinned.push_back(p[j]);
+//             }
+//         }
+//     }
+//     polyscope::registerPointCloud("Boundary", bPoints);
+//     polyscope::registerPointCloud("Pinned Points", pinnedPoints);
+// }
+
+void updateBoundary() {
+    vector<glm::vec3> pinnedPoints;
+    for (auto &p : pinned) {
+        glm::vec3 pnt{p.first, 0, p.second};
+        pinnedPoints.push_back(pnt);
+    }
     polyscope::registerPointCloud("Pinned Points", pinnedPoints);
 }
 
@@ -497,10 +536,14 @@ void constructBridge() {
     }
 
     set<int> pinned_idx;
+    cout << "PINNED" << endl;
+    cout << pinned.size() << endl;
     for (int i = 0; i < pinned.size(); i++) {
+        cout << pinned[i].first << " " << pinned[i].second << ": " << pnt_idx_map.count(pinned[i]) << endl;
         pinned_idx.insert(pnt_idx_map[pinned[i]]);
-        cout << "pinned " << pnt_idx_map[pinned[i]] << endl;
+        // cout << "pinned " << pnt_idx_map[pinned[i]] << endl;
     }
+    cout << pinned_idx.size() << endl;
 
     double load = bridge_load / (x_i.size());
 
@@ -528,7 +571,10 @@ void constructBridge() {
             float z_abs_diff = 0;
             float scalar_abs_diff = 0;
 
+            cout << "Z STEP" << endl;
+
             GRBEnv z_env = GRBEnv();
+            z_env.set(GRB_DoubleParam_TimeLimit, 15);
             GRBModel z_model = GRBModel(z_env);
 
             GRBVar z_i[x_i.size()];
@@ -570,12 +616,19 @@ void constructBridge() {
             z_model.update();
             z_model.write("debug.lp");
             z_model.optimize();
+            if (z_model.get(GRB_IntAttr_Status) == 9) {
+                forceResiduals = visualizeForce(neighbors, pinned_idx, scalar_idx, subs_scalars, subs_z, x_i, y_i);
+                break;
+            }
 
             for(int i = 0; i < x_i.size(); i++) {
                 subs_z[i] = z_i[i].get(GRB_DoubleAttr_X);
             }
             
+            cout << "SCALAR STEP" << endl;
+
             GRBEnv s_env = GRBEnv();
+            s_env.set(GRB_DoubleParam_TimeLimit, 15);
             GRBModel s_model = GRBModel(s_env);
 
             GRBVar scalars[edges.size()];
@@ -616,16 +669,22 @@ void constructBridge() {
                         y_comp += (e_iy - e_jy) * s;
                         z_comp += (e_iz - e_jz) * s;
                         scalar_const += s;
+                        forceResidualsS += 1e-9 * s * s;
                     }
                     string scalar_constr = to_string(i)+"_scalar";
-                    s_model.addConstr(scalar_const >= 1.0, scalar_constr);
+                    s_model.addConstr(scalar_const >= .1, scalar_constr);
                     forceResidualsS += (x_comp * x_comp) + (y_comp * y_comp) + ((z_comp - load) * (z_comp - load));
                 } 
             }
             s_model.setObjective(forceResidualsS);
             s_model.update();
             s_model.write("debug.lp");
+            s_model.set(GRB_IntParam_Presolve, 0);
             s_model.optimize();
+            if (s_model.get(GRB_IntAttr_Status) == 9) {
+                forceResiduals = visualizeForce(neighbors, pinned_idx, scalar_idx, subs_scalars, subs_z, x_i, y_i);
+                break;
+            }
 
             float solved_scalar[edges.size()]; // unneeded, but just for understanding
 
@@ -640,13 +699,19 @@ void constructBridge() {
                 forceResiduals = visualizeForce(neighbors, pinned_idx, scalar_idx, subs_scalars, subs_z, x_i, y_i);
                 break;
             }
-
+            if (iters > 1000) {
+                forceResiduals = visualizeForce(neighbors, pinned_idx, scalar_idx, subs_scalars, subs_z, x_i, y_i);
+                break;
+            }   
             prev_z_abs_diff = z_abs_diff;
             prev_scalar_abs_diff = scalar_abs_diff;
             iters++;
         }
     } catch(GRBException e) {
         cout << "Error code = " << e.getErrorCode() << endl;
+        if (e.getErrorCode() == 9) {
+            forceResiduals = visualizeForce(neighbors, pinned_idx, scalar_idx, subs_scalars, subs_z, x_i, y_i);
+        }
         cout << e.getMessage() << endl;
     } catch(...) {
         cout << "Exception during optimization" << endl;
@@ -685,6 +750,37 @@ void constructBridge() {
 }
 
 void drawImGui() {
+    ImGuiIO& io = ImGui::GetIO();
+
+    if (ImGui::Checkbox("Pin Select Mode", &pinSelectMode)) {
+        
+    }
+    if (triReady && pinSelectMode) {
+        vector<glm::vec3> triPoints;
+        for (int i = 0; i < p_out.size(); i++) {
+            triPoints.push_back({p_out[i].first, 0, p_out[i].second});
+        }
+        polyscope::registerPointCloud("Triangle Points", triPoints);
+        if (io.MouseClicked[0]) { // if the left mouse button was clicked
+            // gather values
+            glm::vec2 screenCoords{ io.MousePos.x * io.DisplayFramebufferScale.x, io.MousePos.y * io.DisplayFramebufferScale.y}; 
+            glm::vec3 worldRay = polyscope::view::screenCoordsToWorldRay(screenCoords);
+            glm::vec3 worldPos = polyscope::view::screenCoordsToWorldPosition(screenCoords);
+            std::pair<polyscope::Structure*, size_t> pickPair =
+                polyscope::pick::evaluatePickQuery(screenCoords.x, screenCoords.y);
+            if (pickPair.first != nullptr) {
+                // std::cout << "    structure: " << "none" << std::endl;
+                std::cout << "    structure: " << pickPair.first << " element id: " << pickPair.second << std::endl;
+                if (pickPair.first->getName() == "Triangle Points") {
+                    cout << "here?" << endl;
+                    pinned.push_back(p_out[pickPair.second]);
+                }
+                // cout << pickPair.first->typeName() << endl;
+                updateBoundary();
+            }
+        }
+    }
+
     if (ImGui::Button("Add Curve")) {
         curves.push_back(new Bezier());
     }
@@ -714,6 +810,7 @@ void drawImGui() {
         constructBoundary(curves, points, segments, in_size);
         curvesReady = true;
         visualizeBoundary();
+        visualizePinned();
     }
 
     ImGui::Separator();
