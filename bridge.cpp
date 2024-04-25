@@ -79,6 +79,9 @@ unordered_map<pair<double, double>, set<int>, PairHash> point_tri_map;
 unordered_map<int, pair<double, double>> tri_centroid;
 double increment = 0.1;
 bool pinSelectMode = false;
+bool pinRemoveMode = false;
+
+float heightScaling = 1.0;
 
 struct Bezier {
   // User-defined parameters
@@ -313,6 +316,7 @@ vector<pair<int, int>> e_out;
 vector<pair<double, double>> pinned;
 bool triReady = false;
 float bridge_load = 2000;
+vector<glm::vec3> bridge_points;
 
 void visualizeBoundary() {
     vector<glm::vec3> bPoints;
@@ -717,7 +721,7 @@ void constructBridge() {
         cout << "Exception during optimization" << endl;
     }
 
-    vector<glm::vec3> bridge_points;
+    bridge_points.clear();
     for (int i = 0; i < x_i.size(); i++) {
         float x = x_i[i];
         float z = subs_z[i];
@@ -742,18 +746,53 @@ void constructBridge() {
     for (size_t i = 0; i < x_i.size(); i++) {
         forceColor[i] = {0, forceResiduals[i], 0};
     }
-    polyscope::registerPointCloud("network points", bridge_points);
-    polyscope::getPointCloud("network points")->addColorQuantity("forces", forceColor);
+    polyscope::registerPointCloud("Force on Bridge Vertices", bridge_points);
+    polyscope::getPointCloud("Force on Bridge Vertices")->addColorQuantity("forces", forceColor);
 
-    polyscope::registerCurveNetwork("my network", bridge_points, vec_edges);
-    polyscope::getCurveNetwork("my network")->addEdgeColorQuantity("scalars", edgeColor);
+    polyscope::registerCurveNetwork("Bridge Structure", bridge_points, vec_edges);
+    polyscope::getCurveNetwork("Bridge Structure")->addEdgeColorQuantity("scalars", edgeColor);
 }
+
+void scaleBridge() {
+    if (bridge_points.size() != 0) {
+        vector<glm::vec3> newPoints;
+        for (int i = 0; i < bridge_points.size(); i++) {
+            newPoints.push_back({bridge_points[i].x, bridge_points[i].y / heightScaling, bridge_points[i].z});
+        }
+        polyscope::getCurveNetwork("Bridge Structure")->updateNodePositions(newPoints);
+        polyscope::getPointCloud("Force on Bridge Vertices")->updatePointPositions(newPoints);
+    }
+}  
 
 void drawImGui() {
     ImGuiIO& io = ImGui::GetIO();
 
-    if (ImGui::Checkbox("Pin Select Mode", &pinSelectMode)) {
+    if (ImGui::Checkbox("Anchor Select Mode", &pinSelectMode)) {
         
+    }
+    if (ImGui::Checkbox("Anchor Removal Mode", &pinRemoveMode)) {
+
+    }
+    if (triReady && pinRemoveMode) {
+        vector<glm::vec3> triPoints;
+        for (int i = 0; i < pinned.size(); i++) {
+            triPoints.push_back({pinned[i].first, 0, pinned[i].second});
+        }
+        polyscope::registerPointCloud("Pinned Points", triPoints);
+        if (io.MouseClicked[0]) {
+            glm::vec2 screenCoords{ io.MousePos.x * io.DisplayFramebufferScale.x, io.MousePos.y * io.DisplayFramebufferScale.y}; 
+            glm::vec3 worldRay = polyscope::view::screenCoordsToWorldRay(screenCoords);
+            glm::vec3 worldPos = polyscope::view::screenCoordsToWorldPosition(screenCoords);
+            std::pair<polyscope::Structure*, size_t> pickPair =
+                polyscope::pick::evaluatePickQuery(screenCoords.x, screenCoords.y);
+            if (pickPair.first != nullptr) {
+                std::cout << "    structure: " << pickPair.first << " element id: " << pickPair.second << std::endl;
+                if (pickPair.first->getName() == "Pinned Points") {
+                    auto p = pinned.erase(pinned.begin() + pickPair.second);
+                }
+                updateBoundary();
+            }
+        }
     }
     if (triReady && pinSelectMode) {
         vector<glm::vec3> triPoints;
@@ -833,7 +872,12 @@ void drawImGui() {
         }
     }
     ImGui::Separator();
-    ImGui::InputFloat("Total vertical load on bridge", &bridge_load);
+    if (ImGui::SliderFloat("Height Scaling", &heightScaling, 1.0, 1000, nullptr, 1.0f)) {
+        scaleBridge();
+    }
+    if (ImGui::InputFloat("Total vertical load on bridge", &bridge_load)) {
+        
+    }
     if (ImGui::Button("Construct Bridge")) {
         if (triReady) {
             constructBridge();
